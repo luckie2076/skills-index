@@ -7,6 +7,7 @@ never cloned or downloaded.
 from __future__ import annotations
 
 import base64
+from concurrent.futures import ThreadPoolExecutor
 from functools import cache
 
 import httpx
@@ -154,24 +155,58 @@ def get_skill_descriptions(  # noqa: E501
         return {}
     owner, repo = _split(source)
     client = client or new_github_client()
-    out: dict[str, str] = {}
-    for name, (_path, sha) in blobs.items():
+
+    def work(name: str) -> tuple[str, str]:
+        _path, sha = blobs[name]
         if not sha:
-            out[name] = ""
-            continue
+            return name, ""
         content = _blob_content.get(sha)
         if content is None:
             try:
                 content = _fetch_blob(client, owner, repo, sha)
             except Exception as exc:
                 print(f"  [skip] {name}: blob fetch failed - {exc}")
-                out[name] = ""
-                continue
+                return name, ""
             _blob_content[sha] = content
-        out[name] = extract_description(content)
+        return name, extract_description(content)
+
+    out: dict[str, str] = {}
+    # Blob fetches are network-bound; fetch concurrently to cut wall-clock time.
+    with ThreadPoolExecutor(max_workers=8) as ex:
+        for name, desc in ex.map(work, list(blobs.keys())):
+            out[name] = desc
     return out
 
 
 def get_repo_meta(source: str, *, client: httpx.Client | None = None) -> tuple[str, str]:
     """Return (pushed_at, default_branch)."""
     return _repo_info(source, client=client)
+
+
+def get_repo_metas(
+    sources: list[str], *, client: httpx.Client | None = None, max_workers: int = 8
+) -> dict[str, tuple[str, str]]:
+    """Concurrently fetch (pushed_at, default_branch) for many repos.
+
+    Returns a mapping for the repos whose metadata was fetched successfully;
+    failures are reported and skipped. Network-bound, so concurrent fetches
+    materially cut wall-clock time on large source sets.
+    """
+    if not sources:
+        return {}
+    client = client or new_github_client()
+
+    def work(source: str) -> tuple[str, object]:
+        try:
+            return source, _repo_info(source, client=client)
+        except Exception as exc:  # noqa: BLE001
+            return source, exc
+
+    out: dict[str, tuple[str, str]] = {}
+    with ThreadPoolExecutor(max_workers=max_workers) as ex:
+        for source, res in ex.map(work, list(sources)):
+            if isinstance(res, Exception):
+                print(f"  [skip] {source}: meta fetch failed - {res}")
+                continue
+            out[source] = res
+    return out

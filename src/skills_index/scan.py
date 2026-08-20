@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime
+import time
 from pathlib import Path
 
 from .config import (
@@ -16,7 +17,12 @@ from .config import (
 )
 
 # META_FILE holds GitHub-sourced metadata (branch / pushedAt / skillCount).
-from .github import get_repo_meta, get_skill_blobs, get_skill_descriptions
+from .github import (
+    get_repo_meta,
+    get_repo_metas,
+    get_skill_blobs,
+    get_skill_descriptions,
+)
 from .http import new_github_client
 from .io_utils import read_json, read_jsonl, write_json, write_jsonl
 
@@ -78,12 +84,21 @@ def scan_repositories(*, force: bool = False, base_dir: Path = BY_SOURCE_DIR) ->
     """Walk `base_dir`, skip unchanged repos by `pushed_at`, emit per-repo files."""
     client = new_github_client()
     now = datetime.datetime.now(datetime.UTC).isoformat()
+    _t0 = time.monotonic()
+    _meta_time = 0.0
+    _blob_time = 0.0
 
     subdirs = sorted(
         d.name for d in base_dir.iterdir()
         if d.is_dir() and d.name.count("__") == 1
     )
     print(f"scanning by-source: {len(subdirs)} GitHub repo dirs" + (" (force)" if force else ""))
+
+    # Fetch all repo metadata concurrently (network-bound) before the loop.
+    _tm = time.monotonic()
+    sources = [dir_to_source(d) for d in subdirs]
+    metas = get_repo_metas(sources, client=client)
+    _meta_time += time.monotonic() - _tm
 
     skipped = 0
     repos: list[JSON] = []
@@ -92,11 +107,9 @@ def scan_repositories(*, force: bool = False, base_dir: Path = BY_SOURCE_DIR) ->
         repo_dir = base_dir / dir_name
         meta_path = repo_dir / META_FILE
 
-        try:
-            pushed, branch = get_repo_meta(source, client=client)
-        except Exception as exc:
-            print(f"  [skip] {source}: meta fetch failed - {exc}")
+        if source not in metas:
             continue
+        pushed, branch = metas[source]
 
         prev = read_json(meta_path, default={}) or {}
         schema_upgrade = prev.get("schemaVersion") != SCHEMA_VERSION
@@ -114,6 +127,7 @@ def scan_repositories(*, force: bool = False, base_dir: Path = BY_SOURCE_DIR) ->
             continue
 
         try:
+            _tb = time.monotonic()
             blobs = get_skill_blobs(source, branch, client=client)
         except Exception as exc:
             print(f"  [skip] {source}: scan failed - {exc}")
@@ -125,7 +139,9 @@ def scan_repositories(*, force: bool = False, base_dir: Path = BY_SOURCE_DIR) ->
             blobs, prev_shas, force=force, schema_upgrade=schema_upgrade
         )
         try:
+            _tb = time.monotonic()
             descriptions = get_skill_descriptions(source, fetch, client=client)
+            _blob_time += time.monotonic() - _tb
         except Exception as exc:
             print(f"  [skip] {source}: description fetch failed - {exc}")
             continue
@@ -161,6 +177,12 @@ def scan_repositories(*, force: bool = False, base_dir: Path = BY_SOURCE_DIR) ->
     write_jsonl(SCANNED_REPOS, repos)
     print(f"scan done: skipped {skipped} unchanged, processed {len(subdirs) - skipped}.")
     print(f"wrote {SCANNED_REPOS.name}: {len(repos)} repos")
+    _total = time.monotonic() - _t0
+    print(
+        f"[timer] scan: total={_total:.1f}s "
+        f"meta={_meta_time:.1f}s blob+desc={_blob_time:.1f}s "
+        f"other={_total - _meta_time - _blob_time:.1f}s"
+    )
 
 
 def _summarize_repo(repo_dir: Path, meta_path: Path, source: str) -> JSON:
