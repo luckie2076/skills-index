@@ -38,14 +38,41 @@
 
 ### 如何使用（消费数据）
 
+每个 Release 的 tag 形如 `data-YYYYMMDDThhmmssZ`（UTC 时间戳，由每日 CI 自动生成，例如 `data-20260820T143015Z`）。**生产环境应锁定到固定 tag**，而不是 `latest`：
+
+- **可预测 / 可复现**：固定 tag 指向某一确定快照，下游缓存失效或被清理后重新拉取，拿到的仍是同一份内容；便于回溯"当时用的到底是哪份索引"。
+- **缓存友好**：`releases/download/<tag>/<file>` 是稳定直链，CDN / 代理可长期缓存、命中率高；而 `releases/latest/download/...` 是 302 重定向到最新 tag，重定向目标随时变化，缓存 key 跟着变、命中率下降，且返回通常不被视为可缓存。
+
 ```bash
-# 拉取最新索引（稳定 URL，自动重定向到 latest）
+# 生产环境：固定 tag（推荐，可预测 + 缓存友好）
+# tag 格式：data-YYYYMMDDThhmmssZ，从 Releases 页面或 gh CLI 获取
+TAG=data-20260820T143015Z
+curl -L -o index.jsonl \
+  https://github.com/luckie2076/skills-index/releases/download/$TAG/index.jsonl
+
+# 拉取完整数据快照（同样用固定 tag，保证与 index.jsonl 同源）
+curl -L -o data.tar.gz \
+  https://github.com/luckie2076/skills-index/releases/download/$TAG/data.tar.gz
+```
+
+> 想拿到**最新**那份快照的 tag 而不写死时间戳，可用 `gh release list` 解析最新的 `data-` Release（注意仍是固定 tag，不是 302 的 `latest`）：
+>
+> ```bash
+> TAG=$(gh release list --limit 100 --json tagName,createdAt \
+>   --jq 'sort_by(.createdAt) | reverse | .[].tagName' \
+>   | grep '^data-' | head -n 1)
+> curl -L -o index.jsonl \
+>   https://github.com/luckie2076/skills-index/releases/download/$TAG/index.jsonl
+> ```
+>
+> 若要**锁定到某一天**的快照（可复现），把上面的 `TAG` 直接写死成当天的 tag 即可，例如 `TAG=data-20260820T143015Z`。
+
+> 固定 tag 与 `latest` 总是同源（同一轮 CI 产物）；用固定 tag 可避免并发/重试时拉到跨 Release 的 `index.jsonl` + `data.tar.gz` 组合。
+
+```bash
+# 本地调试 / 想要最新：用 latest（注意 302 重定向、缓存不友好）
 curl -L -o index.jsonl \
   https://github.com/luckie2076/skills-index/releases/latest/download/index.jsonl
-
-# 拉取完整数据快照
-curl -L -o data.tar.gz \
-  https://github.com/luckie2076/skills-index/releases/latest/download/data.tar.gz
 ```
 
 也可在仓库 Releases 页面选择任意历史快照按需下载。保留最近 30 个 Release，超出部分自动清理。
