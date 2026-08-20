@@ -55,6 +55,9 @@ jobs:
             echo "pages_arg=" >> "$GITHUB_OUTPUT"
             echo "tag_prefix=data-" >> "$GITHUB_OUTPUT"
           fi
+          # Human-readable, lexicographically sortable UTC timestamp used for
+          # the release tag/name (e.g. 20260820T143015Z).
+          echo "ts=$(date -u +%Y%m%dT%H%M%SZ)" >> "$GITHUB_OUTPUT"
 
       - name: Fetch + scan + index
         env:
@@ -67,14 +70,15 @@ jobs:
       - name: Publish Release
         uses: softprops/action-gh-release@v2
         with:
-          # `test` runs get a `test-` prefix so they are distinguishable.
-          tag_name: ${{ steps.scope.outputs.tag_prefix }}${{ github.run_id }}
-          name: "${{ steps.scope.outputs.tag_prefix }}${{ github.run_id }}"
+          # `<prefix>-<UTC timestamp>` so releases are human-readable and sort
+          # chronologically by tag (e.g. data-20260820T143015Z).
+          tag_name: ${{ steps.scope.outputs.tag_prefix }}${{ steps.scope.outputs.ts }}
+          name: "${{ steps.scope.outputs.tag_prefix }}${{ steps.scope.outputs.ts }}"
           body: |
             Automated skills index snapshot.
             Branch: `${{ github.ref_name }}`
             Scope: ${{ github.ref_name == 'test' && 'smoke test (1 page)' || 'full refresh (all pages)' }}
-            Generated at ${{ github.run_id }}.
+            Generated at ${{ steps.scope.outputs.ts }} (UTC).
           files: |
             data.tar.gz
             data/index.jsonl
@@ -87,18 +91,19 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           KEEP: ${{ env.KEEP_RELEASES }}
+          PREFIX: ${{ steps.scope.outputs.tag_prefix }}
         run: |
           set -euo pipefail
-          # List releases sorted oldest-first, skip the most recent KEEP.
+          # Prune only this prefix's releases (keep test- smoke runs untouched).
           mapfile -t RELEASES < <(gh release list --limit 1000 --json tagName,createdAt \
-            --jq 'sort_by(.createdAt) | .[].tagName')
+            --jq 'sort_by(.createdAt) | .[].tagName' | grep "^${PREFIX}")
           total=${#RELEASES[@]}
           if [ "$total" -le "$KEEP" ]; then
             echo "Nothing to prune ($total <= $KEEP)."
             exit 0
           fi
           to_delete=$(( total - KEEP ))
-          echo "Pruning $to_delete oldest release(s) (keeping $KEEP)."
+          echo "Pruning $to_delete oldest ${PREFIX} release(s) (keeping $KEEP)."
           for (( i=0; i<to_delete; i++ )); do
             tag="${RELEASES[$i]}"
             echo "Deleting $tag"
