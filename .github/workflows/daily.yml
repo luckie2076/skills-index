@@ -1,0 +1,107 @@
+name: daily-sync
+
+# Generate the skills index and publish `data/` as a GitHub Release.
+# Data is never committed to the main branch (see .gitignore); each run is a
+# self-contained snapshot uploaded as Release assets.
+#
+# Triggers:
+#   - Daily at 00:00 UTC (full refresh on `main`).
+#   - Push to `main`  -> full refresh (all pages).
+#   - Push to `test`  -> smoke test (single page, 1-page fetch).
+#   - Manual run via workflow_dispatch.
+#
+# Old releases are pruned to keep at most KEEP_RELEASES entries (main only).
+
+on:
+  schedule:
+    # Daily at 00:00 UTC.
+    - cron: "0 0 * * *"
+  push:
+    branches:
+      - main
+      - test
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+env:
+  KEEP_RELEASES: "30"
+
+jobs:
+  build-and-publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Sync dependencies
+        run: uv sync
+
+      - name: Decide fetch scope by branch
+        id: scope
+        run: |
+          set -euo pipefail
+          branch="${{ github.ref_name }}"
+          echo "branch=$branch"
+          if [ "$branch" = "test" ]; then
+            # Smoke test: fetch only 1 page.
+            echo "pages_arg=--pages 1" >> "$GITHUB_OUTPUT"
+            echo "tag_prefix=test-" >> "$GITHUB_OUTPUT"
+          else
+            # Full refresh on main (and any other branch): fetch all pages.
+            echo "pages_arg=" >> "$GITHUB_OUTPUT"
+            echo "tag_prefix=data-" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Fetch + scan + index
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: uv run skills-index update ${{ steps.scope.outputs.pages_arg }}
+
+      - name: Package data snapshot
+        run: tar -czf data.tar.gz data/
+
+      - name: Publish Release
+        uses: softprops/action-gh-release@v2
+        with:
+          # `test` runs get a `test-` prefix so they are distinguishable.
+          tag_name: ${{ steps.scope.outputs.tag_prefix }}${{ github.run_id }}
+          name: "${{ steps.scope.outputs.tag_prefix }}${{ github.run_id }}"
+          body: |
+            Automated skills index snapshot.
+            Branch: `${{ github.ref_name }}`
+            Scope: ${{ github.ref_name == 'test' && 'smoke test (1 page)' || 'full refresh (all pages)' }}
+            Generated at ${{ github.run_id }}.
+          files: |
+            data.tar.gz
+            data/index.jsonl
+            data/fetched-skills.jsonl
+            data/scanned-repos.jsonl
+
+      # Prune only on main, so test smoke runs don't consume the retention quota.
+      - name: Prune old releases
+        if: github.ref_name == 'main'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          KEEP: ${{ env.KEEP_RELEASES }}
+        run: |
+          set -euo pipefail
+          # List releases sorted oldest-first, skip the most recent KEEP.
+          mapfile -t RELEASES < <(gh release list --limit 1000 --json tagName,createdAt \
+            --jq 'sort_by(.createdAt) | .[].tagName')
+          total=${#RELEASES[@]}
+          if [ "$total" -le "$KEEP" ]; then
+            echo "Nothing to prune ($total <= $KEEP)."
+            exit 0
+          fi
+          to_delete=$(( total - KEEP ))
+          echo "Pruning $to_delete oldest release(s) (keeping $KEEP)."
+          for (( i=0; i<to_delete; i++ )); do
+            tag="${RELEASES[$i]}"
+            echo "Deleting $tag"
+            gh release delete "$tag" --yes || true
+            git push --delete origin "$tag" || true
+          done
