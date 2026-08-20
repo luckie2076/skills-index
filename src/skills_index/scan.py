@@ -80,8 +80,11 @@ def merge_skill_records(  # noqa: E501
     return out
 
 
-def scan_repositories(*, force: bool = False, base_dir: Path = BY_SOURCE_DIR) -> None:
-    """Walk `base_dir`, skip unchanged repos by `pushed_at`, emit per-repo files."""
+def scan_repositories(*, force: bool = False, base_dir: Path = BY_SOURCE_DIR) -> dict:
+    """Walk `base_dir`, skip unchanged repos by `pushed_at`, emit per-repo files.
+
+    Returns a summary dict with counts for the run report.
+    """
     client = new_github_client()
     now = datetime.datetime.now(datetime.UTC).isoformat()
     _t0 = time.monotonic()
@@ -101,6 +104,9 @@ def scan_repositories(*, force: bool = False, base_dir: Path = BY_SOURCE_DIR) ->
     _meta_time += time.monotonic() - _tm
 
     skipped = 0
+    updated = 0
+    failed = 0
+    total_skills = 0
     repos: list[JSON] = []
     for dir_name in subdirs:
         source = dir_to_source(dir_name)
@@ -108,6 +114,7 @@ def scan_repositories(*, force: bool = False, base_dir: Path = BY_SOURCE_DIR) ->
         meta_path = repo_dir / META_FILE
 
         if source not in metas:
+            failed += 1
             continue
         pushed, branch = metas[source]
 
@@ -131,6 +138,7 @@ def scan_repositories(*, force: bool = False, base_dir: Path = BY_SOURCE_DIR) ->
             blobs = get_skill_blobs(source, branch, client=client)
         except Exception as exc:
             print(f"  [skip] {source}: scan failed - {exc}")
+            failed += 1
             continue
 
         # File-level incremental: only fetch blobs whose sha changed.
@@ -144,6 +152,7 @@ def scan_repositories(*, force: bool = False, base_dir: Path = BY_SOURCE_DIR) ->
             _blob_time += time.monotonic() - _tb
         except Exception as exc:
             print(f"  [skip] {source}: description fetch failed - {exc}")
+            failed += 1
             continue
 
         skills = merge_skill_records(
@@ -169,13 +178,15 @@ def scan_repositories(*, force: bool = False, base_dir: Path = BY_SOURCE_DIR) ->
         write_json(meta_path, meta)
 
         repos.append(_summarize_repo(repo_dir, meta_path, source))
+        updated += 1
+        total_skills += len(skills)
         print(
             f"  [scan] {source}: {len(skills)} skills "
             f"({len(fetch)}/{len(blobs)} blobs fetched)"
         )
 
     write_jsonl(SCANNED_REPOS, repos)
-    print(f"scan done: skipped {skipped} unchanged, processed {len(subdirs) - skipped}.")
+    print(f"scan done: skipped {skipped} unchanged, updated {updated}, failed {failed}.")
     print(f"wrote {SCANNED_REPOS.name}: {len(repos)} repos")
     _total = time.monotonic() - _t0
     print(
@@ -183,6 +194,14 @@ def scan_repositories(*, force: bool = False, base_dir: Path = BY_SOURCE_DIR) ->
         f"meta={_meta_time:.1f}s blob+desc={_blob_time:.1f}s "
         f"other={_total - _meta_time - _blob_time:.1f}s"
     )
+    summary = {
+        "repos_total": len(subdirs),
+        "repos_skipped": skipped,
+        "repos_updated": updated,
+        "repos_failed": failed,
+        "skills_scanned": total_skills,
+    }
+    return summary
 
 
 def _summarize_repo(repo_dir: Path, meta_path: Path, source: str) -> JSON:

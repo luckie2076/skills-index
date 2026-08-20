@@ -17,20 +17,25 @@ from .io_utils import read_jsonl, write_jsonl
 Record = dict[str, JSON]
 
 
-def run_index(base_dir: Path = BY_SOURCE_DIR) -> list[Record]:
+def run_index(base_dir: Path = BY_SOURCE_DIR) -> tuple[list[Record], dict]:
     """Merge the fetch output with every repo's scanned skills into index.jsonl.
 
     - `fetched-skills.jsonl` provides the skills.sh metadata (name / installs / ...).
     - each `scanned.jsonl` provides the scanned GitHub URL + path.
     Records are joined on `source` + `skillId`; scanned fields (url, path)
     override / fill in the fetch-only records.
+
+    Returns ``(index_records, summary)`` where ``summary`` holds counts for the
+    run report.
     """
     fetched = {_key(r): r for r in read_jsonl(FETCHED_SKILLS)}
+    summary: dict = {"fetched": 0, "scanned_merged": 0, "orphans": 0, "index": 0}
     if not fetched:
         print(f"[index] no fetched data at {FETCHED_SKILLS}; run `fetch` first")
         write_jsonl(INDEX_JSONL, [])
-        return []
+        return [], summary
 
+    summary["fetched"] = len(fetched)
     merged: dict[tuple[str, str], Record] = dict(fetched)
 
     subdirs = sorted(
@@ -59,12 +64,15 @@ def run_index(base_dir: Path = BY_SOURCE_DIR) -> list[Record]:
 
     result = list(merged.values())
     write_jsonl(INDEX_JSONL, result)
+    summary["scanned_merged"] = scanned_count
+    summary["orphans"] = orphan_count
+    summary["index"] = len(result)
     msg = (
         f"[index] merged {len(fetched)} fetched + {scanned_count} scanned "
         f"(skipped {orphan_count} orphan) -> {len(result)} in {INDEX_JSONL}"
     )
     print(msg)
-    return result
+    return result, summary
 
 
 def _key(rec: Record) -> tuple[str, str]:

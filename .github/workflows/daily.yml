@@ -67,6 +67,16 @@ jobs:
       - name: Package data snapshot
         run: tar -czf data.tar.gz data/
 
+      - name: Build Release body from run summary
+        id: report
+        run: |
+          set -euo pipefail
+          {
+            echo "body<<REPORT_EOF"
+            cat data/run-summary.md
+            echo "REPORT_EOF"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Publish Release
         uses: softprops/action-gh-release@v2
         with:
@@ -79,11 +89,14 @@ jobs:
             Branch: `${{ github.ref_name }}`
             Scope: ${{ github.ref_name == 'test' && 'smoke test (1 page)' || 'full refresh (all pages)' }}
             Generated at ${{ steps.scope.outputs.ts }} (UTC).
+
+            ${{ steps.report.outputs.body }}
           files: |
             data.tar.gz
             data/index.jsonl
             data/fetched-skills.jsonl
             data/scanned-repos.jsonl
+            data/run-summary.md
 
       # Prune only on main, so test smoke runs don't consume the retention quota.
       - name: Prune old releases

@@ -28,16 +28,17 @@ def test_update_runs_pipeline_in_order(monkeypatch: pytest.MonkeyPatch) -> None:
     def fake_clean() -> None:
         calls.append(("clean", {}))
 
-    def fake_fetch(*, max_pages: int = 0, token: str = "") -> list:
+    def fake_fetch(*, max_pages: int = 0, token: str = "") -> tuple[list, dict]:
         calls.append(("fetch", {"max_pages": max_pages}))
-        return []
+        return [], {}
 
-    def fake_scan(*, force: bool = False, base_dir=None) -> None:
+    def fake_scan(*, force: bool = False, base_dir=None) -> dict:
         calls.append(("scan", {"force": force}))
+        return {}
 
-    def fake_index(*, base_dir=None) -> list:
+    def fake_index(*, base_dir=None) -> tuple[list, dict]:
         calls.append(("index", {}))
-        return []
+        return [], {}
 
     monkeypatch.setattr(cli, "clean_workspace", fake_clean)
     monkeypatch.setattr(cli, "run_fetch", fake_fetch)
@@ -58,15 +59,16 @@ def test_update_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     def fake_clean() -> None:
         seen["clean"] = {}
 
-    def fake_fetch(*, max_pages: int = 0, token: str = "") -> list:
+    def fake_fetch(*, max_pages: int = 0, token: str = "") -> tuple[list, dict]:
         seen["fetch"] = {"max_pages": max_pages}
-        return []
+        return [], {}
 
-    def fake_scan(*, force: bool = False, base_dir=None) -> None:
+    def fake_scan(*, force: bool = False, base_dir=None) -> dict:
         seen["scan"] = {"force": force}
+        return {}
 
-    def fake_index(*, base_dir=None) -> list:
-        return []
+    def fake_index(*, base_dir=None) -> tuple[list, dict]:
+        return [], {}
 
     monkeypatch.setattr(cli, "clean_workspace", fake_clean)
     monkeypatch.setattr(cli, "run_fetch", fake_fetch)
@@ -107,28 +109,6 @@ def test_clean_workspace_wipes_stale_artifacts(monkeypatch: pytest.MonkeyPatch, 
     assert not (data / "scanned-repos.jsonl").exists()
     # The per-source tree is wiped entirely (no stale repo dirs remain).
     assert list(by_source.iterdir()) == []
-
-
-def test_update_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Without flags, update uses max_pages=0 (all) and force=False."""
-    seen: dict[str, dict] = {}
-
-    def fake_fetch(*, max_pages: int = 0, token: str = "") -> list:
-        seen["fetch"] = {"max_pages": max_pages}
-        return []
-
-    def fake_scan(*, force: bool = False, base_dir=None) -> None:
-        seen["scan"] = {"force": force}
-
-    def fake_index(*, base_dir=None) -> list:
-        return []
-
-    monkeypatch.setattr(cli, "run_fetch", fake_fetch)
-    monkeypatch.setattr(cli, "scan_repositories", fake_scan)
-    monkeypatch.setattr(cli, "run_index", fake_index)
-
-    assert cli.main(["update"]) == 0
-    assert seen == {"fetch": {"max_pages": 0}, "scan": {"force": False}}
 
 
 def test_unknown_command_returns_error() -> None:

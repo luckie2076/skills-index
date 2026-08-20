@@ -50,6 +50,60 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
+def _build_summary(
+    fetch_sum: dict,
+    scan_sum: dict,
+    index_sum: dict,
+    *,
+    total: float,
+    fetch: float,
+    scan: float,
+    index: float,
+    pages: int,
+) -> str:
+    """Render a Markdown run report shown in the Release body and saved to disk."""
+    pages_str = "all" if not pages else str(pages)
+    scope_str = "full refresh" if not pages else f"smoke test ({pages} page)"
+    failed = fetch_sum.get("failed_pages") or []
+    lines = [
+        "## Run summary",
+        "",
+        f"- **Scope:** {scope_str}",
+        f"- **Total time:** {total:.1f}s (fetch {fetch:.1f}s / scan {scan:.1f}s / index {index:.1f}s)",
+        "",
+        "### Fetch (skills.sh)",
+        f"- Pages fetched: `{pages_str}`",
+        f"- Raw skills: `{fetch_sum.get('raw_skills', 0)}`",
+        f"- Kept (GitHub sources): `{fetch_sum.get('kept_github', 0)}`",
+        f"- Dropped (non-GitHub): `{fetch_sum.get('dropped_non_github', 0)}`",
+        f"- Source repos: `{fetch_sum.get('source_dirs', 0)}`",
+    ]
+    if failed:
+        lines.append(f"- Skipped pages (errors): `{len(failed)}` {failed}")
+    lines += [
+        "",
+        "### Scan (GitHub repos)",
+        f"- Repos total: `{scan_sum.get('repos_total', 0)}`",
+        f"- Skipped (unchanged): `{scan_sum.get('repos_skipped', 0)}`",
+        f"- Updated (incremental): `{scan_sum.get('repos_updated', 0)}`",
+        f"- Failed: `{scan_sum.get('repos_failed', 0)}`",
+        f"- Skills scanned: `{scan_sum.get('skills_scanned', 0)}`",
+        "",
+        "### Index (merged)",
+        f"- Fetched skills: `{index_sum.get('fetched', 0)}`",
+        f"- Scanned merged: `{index_sum.get('scanned_merged', 0)}`",
+        f"- Orphans skipped: `{index_sum.get('orphans', 0)}`",
+        f"- **Final index entries: `{index_sum.get('index', 0)}`**",
+        "",
+        "### Artifacts",
+        "- `data.tar.gz` — full `data/` tree",
+        "- `index.jsonl` — merged skills index",
+        "- `fetched-skills.jsonl` — raw skills.sh data",
+        "- `scanned-repos.jsonl` — per-repo scan summary",
+    ]
+    return "\n".join(lines) + "\n"
+
+
 def clean_workspace() -> None:
     """Remove previous run artifacts so a one-shot `update` rebuilds from zero.
 
@@ -95,17 +149,24 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "update":
         t0 = time.monotonic()
         clean_workspace()
-        run_fetch(max_pages=args.pages)
+        _, fetch_sum = run_fetch(max_pages=args.pages)
         t_fetch = time.monotonic() - t0
-        scan_repositories(force=args.force)
+        scan_sum = scan_repositories(force=args.force)
         t_scan = time.monotonic() - t_fetch - t0
-        run_index()
+        _, index_sum = run_index()
         t_index = time.monotonic() - t_scan - t_fetch - t0
         t_total = time.monotonic() - t0
         print(
             f"[timer] total={t_total:.1f}s "
             f"fetch={t_fetch:.1f}s scan={t_scan:.1f}s index={t_index:.1f}s"
         )
+        summary = _build_summary(
+            fetch_sum, scan_sum, index_sum,
+            total=t_total, fetch=t_fetch, scan=t_scan, index=t_index,
+            pages=args.pages,
+        )
+        (DATA_DIR / "run-summary.md").write_text(summary)
+        print("wrote data/run-summary.md")
         return 0
 
     return 2

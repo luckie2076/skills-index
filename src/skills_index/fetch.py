@@ -97,12 +97,15 @@ def distribute_by_source(skills: list[Record], base_dir: Path = BY_SOURCE_DIR) -
     return len(groups), total
 
 
-def run_fetch(*, max_pages: int = 0, token: str = "") -> list[Record]:
+def run_fetch(*, max_pages: int = 0, token: str = "") -> tuple[list[Record], dict]:
     """Fetch skills.sh data, filter GitHub sources, and save.
 
     Saves only the raw skills.sh fields (source / skillId / name / installs /
     weeklyInstalls / url). GitHub URLs are discovered later by `scan`, which
     walks each repo's SKILL.md files — so no URL resolution happens here.
+
+    Returns ``(skills, summary)`` where ``summary`` holds counts for the run
+    report.
     """
     raw, failed_pages = fetch_all(max_pages, token=token)
     if failed_pages:
@@ -115,4 +118,12 @@ def run_fetch(*, max_pages: int = 0, token: str = "") -> list[Record]:
 
     dirs, total = distribute_by_source(skills)
     print(f"distributed into {dirs} source dirs, {total} records")
-    return skills
+    summary = {
+        "pages": max_pages if max_pages else "all",
+        "raw_skills": len(raw),
+        "kept_github": len(skills),
+        "dropped_non_github": dropped,
+        "source_dirs": dirs,
+        "failed_pages": failed_pages,
+    }
+    return skills, summary
