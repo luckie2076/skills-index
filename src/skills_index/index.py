@@ -21,15 +21,23 @@ def run_index(base_dir: Path = BY_SOURCE_DIR) -> tuple[list[Record], dict]:
     """Merge the fetch output with every repo's scanned skills into index.jsonl.
 
     - `fetched-skills.jsonl` provides the skills.sh metadata (name / installs / ...).
-    - each `scanned.jsonl` provides the scanned GitHub URL + path.
-    Records are joined on `source` + `skillId`; scanned fields (url, path)
-    override / fill in the fetch-only records.
+    - each `scanned.jsonl` provides the scanned GitHub `path` + `description`.
+    Records are joined on `source` + `skillId`; scanned fields (path, description)
+    fill in the fetch-only records. Only skills actually present in a repo scan
+    are written to index.jsonl: fetched skills with no scanned counterpart (e.g.
+    removed from the repo) are dropped.
 
     Returns ``(index_records, summary)`` where ``summary`` holds counts for the
     run report.
     """
     fetched = {_key(r): r for r in read_jsonl(FETCHED_SKILLS)}
-    summary: dict = {"fetched": 0, "scanned_merged": 0, "orphans": 0, "index": 0}
+    summary: dict = {
+        "fetched": 0,
+        "scanned_merged": 0,
+        "orphans": 0,
+        "not_in_repo": 0,
+        "index": 0,
+    }
     if not fetched:
         print(f"[index] no fetched data at {FETCHED_SKILLS}; run `fetch` first")
         write_jsonl(INDEX_JSONL, [])
@@ -37,6 +45,7 @@ def run_index(base_dir: Path = BY_SOURCE_DIR) -> tuple[list[Record], dict]:
 
     summary["fetched"] = len(fetched)
     merged: dict[tuple[str, str], Record] = dict(fetched)
+    matched_keys: set[tuple[str, str]] = set()
 
     subdirs = sorted(
         d.name for d in base_dir.iterdir()
@@ -60,16 +69,22 @@ def run_index(base_dir: Path = BY_SOURCE_DIR) -> tuple[list[Record], dict]:
                 continue
             base.update(rec)
             merged[key] = base
+            matched_keys.add(key)
             scanned_count += 1
 
-    result = list(merged.values())
+    # Only skills confirmed by a repo scan belong in the index; fetched skills
+    # missing from the scan are dropped (keeps fetched order).
+    not_in_repo = len(fetched) - len(matched_keys)
+    result = [merged[k] for k in fetched if k in matched_keys]
     write_jsonl(INDEX_JSONL, result)
     summary["scanned_merged"] = scanned_count
     summary["orphans"] = orphan_count
+    summary["not_in_repo"] = not_in_repo
     summary["index"] = len(result)
     msg = (
-        f"[index] merged {len(fetched)} fetched + {scanned_count} scanned "
-        f"(skipped {orphan_count} orphan) -> {len(result)} in {INDEX_JSONL}"
+        f"[index] merged {scanned_count} scanned into {len(fetched)} fetched "
+        f"(skipped {orphan_count} orphan, dropped {not_in_repo} not-in-repo) "
+        f"-> {len(result)} in {INDEX_JSONL}"
     )
     print(msg)
     return result, summary

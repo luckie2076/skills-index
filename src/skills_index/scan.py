@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime
+import shutil
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -17,7 +18,7 @@ from .config import (
     dir_to_source,
 )
 
-# META_FILE holds GitHub-sourced metadata (branch / pushedAt / skillCount).
+# META_FILE holds GitHub-sourced metadata (branch / pushedAt / stars / skillCount).
 from .github import (
     get_repo_meta,
     get_repo_metas,
@@ -94,7 +95,8 @@ def _scan_one_repo(
     force: bool,
     now: str,
     base_dir: Path,
-    metas: dict[str, tuple[str, str]],
+    metas: dict[str, tuple[str, str, int]],
+    missing: set[str],
     client,
     counters: dict,
 ) -> JSON | None:
@@ -109,9 +111,17 @@ def _scan_one_repo(
     meta_path = repo_dir / META_FILE
 
     if source not in metas:
-        counters["failed"] += 1
+        if source in missing:
+            # Repo is definitively gone (404): drop its stale scan data so it
+            # (and its skills) no longer appear in the index.
+            counters["gone"] += 1
+            print(f"  [gone] {source}: repo not found (404); removing stale data")
+            if repo_dir.exists():
+                shutil.rmtree(repo_dir)
+        else:
+            counters["failed"] += 1
         return None
-    pushed, branch = metas[source]
+    pushed, branch, stars = metas[source]
 
     prev = read_json(meta_path, default={}) or {}
     schema_upgrade = prev.get("schemaVersion") != SCHEMA_VERSION
@@ -160,6 +170,7 @@ def _scan_one_repo(
         "source": source,
         "branch": branch,
         "pushedAt": pushed,
+        "stars": stars,
         "lastScanned": now,
         "skillCount": len(skills),
         "truncated": False,
@@ -196,10 +207,16 @@ def scan_repositories(*, force: bool = False, base_dir: Path = BY_SOURCE_DIR) ->
     # Fetch all repo metadata concurrently (network-bound) before the loop.
     _tm = time.monotonic()
     sources = [dir_to_source(d) for d in subdirs]
-    metas = get_repo_metas(sources, client=client)
+    metas, missing = get_repo_metas(sources, client=client)
     _meta_time += time.monotonic() - _tm
 
-    counters = {"skipped": 0, "updated": 0, "failed": 0, "total_skills": 0}
+    counters = {
+        "skipped": 0,
+        "updated": 0,
+        "failed": 0,
+        "gone": 0,
+        "total_skills": 0,
+    }
     repos: list[JSON] = []
 
     # Repo-level scanning is I/O-bound: overlap network waits across repos.
@@ -212,6 +229,7 @@ def scan_repositories(*, force: bool = False, base_dir: Path = BY_SOURCE_DIR) ->
                 now=now,
                 base_dir=base_dir,
                 metas=metas,
+                missing=missing,
                 client=client,
                 counters=counters,
             )
@@ -225,7 +243,8 @@ def scan_repositories(*, force: bool = False, base_dir: Path = BY_SOURCE_DIR) ->
     write_jsonl(SCANNED_REPOS, repos)
     print(
         f"scan done: skipped {counters['skipped']} unchanged, "
-        f"updated {counters['updated']}, failed {counters['failed']}."
+        f"updated {counters['updated']}, failed {counters['failed']}, "
+        f"gone {counters['gone']}."
     )
     print(f"wrote {SCANNED_REPOS.name}: {len(repos)} repos")
     _total = time.monotonic() - _t0
@@ -238,6 +257,7 @@ def scan_repositories(*, force: bool = False, base_dir: Path = BY_SOURCE_DIR) ->
         "repos_skipped": counters["skipped"],
         "repos_updated": counters["updated"],
         "repos_failed": counters["failed"],
+        "repos_gone": counters["gone"],
         "skills_scanned": counters["total_skills"],
     }
     return summary
@@ -253,6 +273,7 @@ def _summarize_repo(repo_dir: Path, meta_path: Path, source: str) -> JSON:
         "source": source,
         "branch": meta.get("branch"),
         "pushedAt": meta.get("pushedAt"),
+        "stars": meta.get("stars"),
         "lastScanned": meta.get("lastScanned"),
         "skillCount": meta.get("skillCount", len(skills)),
         "skills": [s["path"] for s in skills],

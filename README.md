@@ -73,9 +73,9 @@ curl -L -o data.tar.gz \
 
 ### 2. 扫描 GitHub 仓库（`scan`）
 
-- **极简说明**：按 `pushed_at` 增量扫描各 GitHub 仓库，找出其中真正的 `SKILL.md` 技能定义（跳过未变更的仓库）。增量粒度是**文件级 blob sha**：`pushed_at` 变化的仓库，下载其**代码压缩包（codeload tarball，不计入 REST API 速率配额）**，本地解压遍历所有 `SKILL.md`，用 git 相同算法在本地计算每个文件的 blob sha（与 GitHub 的 blob sha 一致），只对 sha 相比上次发生变化的 `SKILL.md` 重新解析 YAML frontmatter 提取 `description`，未变化的技能直接复用本地缓存；从仓库中消失的技能会被自动移除。每个技能只记录仓库内相对路径 `path`，完整 GitHub 目录 URL 由调用方用 `source` + `path` 拼接。
+- **极简说明**：按 `pushed_at` 增量扫描各 GitHub 仓库，找出其中真正的 `SKILL.md` 技能定义（跳过未变更的仓库）。增量粒度是**文件级 blob sha**：`pushed_at` 变化的仓库，下载其**代码压缩包（codeload tarball，不计入 REST API 速率配额）**，本地解压遍历所有 `SKILL.md`，用 git 相同算法在本地计算每个文件的 blob sha（与 GitHub 的 blob sha 一致），只对 sha 相比上次发生变化的 `SKILL.md` 重新解析 YAML frontmatter 提取 `description`，未变化的技能直接复用本地缓存；从仓库中消失的技能会被自动移除。每个技能只记录仓库内相对路径 `path`，完整 GitHub 目录 URL 由调用方用 `source` + `path` 拼接。**仓库本身已不存在时（GitHub 返回 404，如已删除/改名/转为私有）也不会记录该仓库**：会删除其残留的旧扫描数据，该仓库及其技能随之从后续索引中移除，不再出现。仓库级信息会记录其 **star 数**（来自同一仓库元数据请求的 `stargazers_count`，随 `pushed_at` 一起获取，不增加额外请求）。
 - **对应命令**：`uv run skills-index scan`（加 `--force` 可强制全量重扫；扫描产物格式升级时会自动触发一次性全量重扫）
-- **产物形状**：在每个仓库目录下输出 `scanned.jsonl`（扫描发现的所有技能，含 `path` / `description`）与 `meta.json`（仓库元信息，含 `blobShas` 文件级增量指纹与 `schemaVersion`）。
+- **产物形状**：在每个仓库目录下输出 `scanned.jsonl`（扫描发现的所有技能，含 `path` / `description`）与 `meta.json`（仓库元信息，含 `branch` / `pushedAt` / `stars` / `blobShas` 文件级增量指纹与 `schemaVersion`）。汇总产物 `scanned-repos.jsonl` 每仓库一行，同样含 `stars`。
 
 ```json
 // scanned.jsonl 中的一行
@@ -87,16 +87,17 @@ curl -L -o data.tar.gz \
 {
   "branch": "main",
   "pushedAt": "2026-08-10T12:00:00Z",
+  "stars": 1284,
   "lastScanned": "2026-08-20T10:00:00Z",
   "skillCount": 12,
-  "schemaVersion": 2,
+  "schemaVersion": 3,
   "blobShas": { "skills/find-skills": "9f3c1a2b..." }
 }
 ```
 
 ### 3. 合并索引（`index`）
 
-- **极简说明**：把第 1 步的 skills.sh 原始数据（`fetched-skills.jsonl`）与第 2 步扫描出的所有仓库技能（`scanned.jsonl`）按 `source` + `skillId`（从 `path` 末段推导）合并，生成最终索引 `data/index.jsonl`（以**技能**为单位平铺，每行一个完整技能记录，含 skills.sh 元信息 + 扫描得到的 `path` / `description`）。
+- **极简说明**：把第 1 步的 skills.sh 原始数据（`fetched-skills.jsonl`）与第 2 步扫描出的所有仓库技能（`scanned.jsonl`）按 `source` + `skillId`（从 `path` 末段推导）合并，生成最终索引 `data/index.jsonl`（以**技能**为单位平铺，每行一个完整技能记录，含 skills.sh 元信息 + 扫描得到的 `path` / `description`）。**只有同时存在于 skills.sh 与仓库扫描中的技能才会进入索引**：仅出现在 skills.sh、但仓库中已不存在（未被扫描到）的技能会被剔除，不会记录；同理，仓库已不存在（第 2 步 404 时已清理其数据）的仓库，其所有技能也不会进入索引。
 - **对应命令**：`uv run skills-index index`
 
 ```json
@@ -141,10 +142,10 @@ data/
     <owner>__<repo>/      # 双下划线是 '/' 的无损替换
       fetched.jsonl       # 该仓库的 skills.sh 原始数据（source / skillId / installs / weeklyInstalls）
       scanned.jsonl       # 经 scan 发现的所有技能，含 path / description
-      meta.json           # 分支 / pushedAt / skillCount / blobShas（来自 GitHub）
+      meta.json           # 分支 / pushedAt / stars / skillCount / blobShas（来自 GitHub）
 ```
 
-> `fetch` 只保存 skills.sh 的原始字段（`source` / `skillId` / `installs` / `weeklyInstalls`），不保存任何 URL；`scan` 只记录每个技能在仓库内的相对路径 `path` 与 `description`，也不拼出完整 URL。最终 `index.jsonl` 以技能为单位平铺，便于按 `skillId` 检索，但同样只保存 `path` 而不保存可直接访问的 `url`。需要完整 GitHub 目录链接时，只需 `source` + `path` 即可拼成 `https://github.com/<source>/tree/HEAD/<path>`（`HEAD` 恒指向仓库默认分支，无需记录分支名）。
+> `fetch` 只保存 skills.sh 的原始字段（`source` / `skillId` / `installs` / `weeklyInstalls`），不保存任何 URL；`scan` 只记录每个技能在仓库内的相对路径 `path` 与 `description`，也不拼出完整 URL。最终 `index.jsonl` 以技能为单位平铺，便于按 `skillId` 检索，但同样只保存 `path` 而不保存可直接访问的 `url`。合并时只保留**同时存在于 skills.sh 与仓库扫描中**的技能（skills.sh 有、但仓库中已不存在的技能不会记录）。需要完整 GitHub 目录链接时，只需 `source` + `path` 即可拼成 `https://github.com/<source>/tree/HEAD/<path>`（`HEAD` 恒指向仓库默认分支，无需记录分支名）。
 
 ## 环境要求
 

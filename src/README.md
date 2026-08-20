@@ -35,7 +35,7 @@ src/
 | `io_utils` | `write_jsonl` / `read_jsonl` / `write_json` / `read_json` 持久化辅助函数。                                           |
 | `github`   | GitHub 元数据/树/内容查询。使用运行期作用域的 `@cache` 对仓库元请求、skill 树遍历和 description 提取去重。 |
 | `fetch`    | 从 skills.sh 拉取、GitHub 来源过滤，并写入 `data/fetched-skills.jsonl` + `data/by-source/`（仅原始字段，不解析 GitHub URL）。 |
-| `scan`     | 遍历 `data/by-source/`，通过 `pushed_at` 跳过未变更的仓库，扫描出每个仓库内的所有 `SKILL.md` 技能（含 `url` / `path` / `description`），输出各仓库的 `scanned.jsonl` + `meta.json`，并汇总生成 `data/scanned-repos.jsonl`（以仓库为单位、一行一个仓库，含 `branch` / `pushedAt` / `skillCount` / `skills[]`，其中 `skills[]` 为纯 path 字符串数组）。 |
+| `scan`     | 遍历 `data/by-source/`，通过 `pushed_at` 跳过未变更的仓库，扫描出每个仓库内的所有 `SKILL.md` 技能（含 `path` / `description`），输出各仓库的 `scanned.jsonl` + `meta.json`（含 `branch` / `pushedAt` / `stars` / `blobShas`），并汇总生成 `data/scanned-repos.jsonl`（以仓库为单位、一行一个仓库，含 `branch` / `pushedAt` / `stars` / `skillCount` / `skills[]`，其中 `skills[]` 为纯 path 字符串数组）。 |
 | `index`    | 读取 `data/fetched-skills.jsonl` 与各 `scanned.jsonl`，按 `source`+`skillId` 合并，生成最终 `data/index.jsonl`（以 skill 为单位平铺，每行一个完整技能记录）。 |
 
 ## 依赖方向（无环）

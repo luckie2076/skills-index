@@ -55,7 +55,7 @@ jobs:
           if [ "$branch" = "test" ]; then
             # Smoke test: fetch only 1 page.
             echo "pages_arg=--pages 1" >> "$GITHUB_OUTPUT"
-            echo "tag_prefix=test-" >> "$GITHUB_OUTPUT"
+            echo "tag_prefix=alpha-" >> "$GITHUB_OUTPUT"
           else
             # Full refresh on main (and any other branch): fetch all pages.
             echo "pages_arg=" >> "$GITHUB_OUTPUT"

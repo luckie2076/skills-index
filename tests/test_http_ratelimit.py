@@ -94,3 +94,23 @@ def test_get_json_gives_up_after_retries(monkeypatch):
 
     with pytest.raises(HttpError):
         get_json(_FakeClient(), "x")  # type: ignore[arg-type]
+
+
+def test_get_json_404_raises_immediately_without_retries(monkeypatch):
+    monkeypatch.setattr(http_mod.time, "sleep", lambda s: None)
+    calls = {"n": 0}
+
+    def fake_get(url):
+        calls["n"] += 1
+        return _FakeResponse(404)
+
+    class _FakeClient:
+        def get(self, url):
+            return fake_get(url)
+
+    from skills_index.http import HttpError
+
+    # A 404 is definitive (repo/page does not exist): fail fast, no retries.
+    with pytest.raises(HttpError):
+        get_json(_FakeClient(), "x")  # type: ignore[arg-type]
+    assert calls["n"] == 1

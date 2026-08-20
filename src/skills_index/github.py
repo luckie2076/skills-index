@@ -27,14 +27,15 @@ CODELOAD = "https://codeload.github.com"
 
 # Process-wide cache (valid for a single run only).
 @cache
-def _repo_info(source: str, *, client: httpx.Client | None = None) -> tuple[str, str]:
-    """Return (pushed_at, default_branch) for `source`, cached for the run."""
+def _repo_info(source: str, *, client: httpx.Client | None = None) -> tuple[str, str, int]:
+    """Return (pushed_at, default_branch, stars) for `source`, cached for the run."""
     owner, repo = _split(source)
     client = client or new_github_client()
     data = get_json(client, f"/repos/{owner}/{repo}")
     pushed = data.get("pushed_at") or data.get("updated_at") or ""
     branch = str(data.get("default_branch", "main"))
-    return pushed, branch
+    stars = int(data.get("stargazers_count") or 0)
+    return pushed, branch, stars
 
 
 def _split(source: str) -> tuple[str, str]:
@@ -171,22 +172,42 @@ def get_skill_descriptions(  # noqa: E501
     return out
 
 
-def get_repo_meta(source: str, *, client: httpx.Client | None = None) -> tuple[str, str]:
-    """Return (pushed_at, default_branch)."""
+def get_repo_meta(source: str, *, client: httpx.Client | None = None) -> tuple[str, str, int]:
+    """Return (pushed_at, default_branch, stars)."""
     return _repo_info(source, client=client)
+
+
+def _is_missing_repo(exc: Exception) -> bool:
+    """True if the failure chain contains a definitive 404 (repo not found).
+
+    `get_json` wraps a 404 as ``HttpError from HTTPStatusError(404)``, so we
+    walk the cause chain looking for that HTTP status.
+    """
+    seen: set[int] = set()
+    cur: BaseException | None = exc
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        if isinstance(cur, httpx.HTTPStatusError) and cur.response.status_code == 404:
+            return True
+        cur = cur.__cause__
+    return False
 
 
 def get_repo_metas(
     sources: list[str], *, client: httpx.Client | None = None, max_workers: int = 8
-) -> dict[str, tuple[str, str]]:
-    """Concurrently fetch (pushed_at, default_branch) for many repos.
+) -> tuple[dict[str, tuple[str, str, int]], set[str]]:
+    """Concurrently fetch (pushed_at, default_branch, stars) for many repos.
 
-    Returns a mapping for the repos whose metadata was fetched successfully;
-    failures are reported and skipped. Network-bound, so concurrent fetches
-    materially cut wall-clock time on large source sets.
+    Returns ``(metas, missing)``:
+    - `metas` maps the repos whose metadata was fetched successfully;
+    - `missing` contains the sources whose repo is definitively gone (404,
+      e.g. deleted or renamed), so callers can drop their stale data.
+
+    Other failures are reported and skipped. Network-bound, so concurrent
+    fetches materially cut wall-clock time on large source sets.
     """
     if not sources:
-        return {}
+        return {}, set()
     client = client or new_github_client()
 
     def work(source: str) -> tuple[str, object]:
@@ -195,11 +216,16 @@ def get_repo_metas(
         except Exception as exc:  # noqa: BLE001
             return source, exc
 
-    out: dict[str, tuple[str, str]] = {}
+    out: dict[str, tuple[str, str, int]] = {}
+    missing: set[str] = set()
     with ThreadPoolExecutor(max_workers=max_workers) as ex:
         for source, res in ex.map(work, list(sources)):
             if isinstance(res, Exception):
-                print(f"  [skip] {source}: meta fetch failed - {res}")
+                if _is_missing_repo(res):
+                    missing.add(source)
+                    print(f"  [gone] {source}: repo not found (404)")
+                else:
+                    print(f"  [skip] {source}: meta fetch failed - {res}")
                 continue
             out[source] = res
-    return out
+    return out, missing

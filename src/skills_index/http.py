@@ -102,6 +102,16 @@ def get_json(client: httpx.Client, url: str) -> Any:
                 continue
             resp.raise_for_status()
             return resp.json()
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 404:
+                # Definitive "not found" (e.g. a deleted/renamed repo or a
+                # page that does not exist): retrying cannot change the
+                # answer, so fail fast instead of burning 5 attempts.
+                raise HttpError(f"404 on {url}") from exc
+            last_err = exc
+            wait = 2.0 * attempt
+            print(f"  [retry {attempt}/{RETRIES}] {url}: {exc}; sleeping {wait:.1f}s")
+            time.sleep(wait)
         except (httpx.HTTPError, ValueError) as exc:
             last_err = exc
             wait = 2.0 * attempt

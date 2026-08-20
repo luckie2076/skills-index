@@ -33,7 +33,7 @@ SCANNED_FILE = "scanned.jsonl"
 META_FILE = "meta.json"
 
 # Bump when the scan output format changes so stale caches are rebuilt once.
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 # Fields kept from the skills.sh payload.
 KEEP_FIELDS: set[str] = {"source", "skillId", "installs", "weeklyInstalls", "url"}

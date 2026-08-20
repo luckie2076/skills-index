@@ -18,12 +18,15 @@ from skills_index.io_utils import read_json, read_jsonl
 from skills_index.scan import scan_repositories
 
 
-OWNERS = {f"owner{i}/repo{i}": (f"2024-01-0{i}T00:00:0{i}Z", "main") for i in range(1, 7)}
+OWNERS = {
+    f"owner{i}/repo{i}": (f"2024-01-0{i}T00:00:0{i}Z", "main", i * 100)
+    for i in range(1, 7)
+}
 
 
 def _make_by_source(base_dir: Path) -> None:
     """Create 6 repo dirs; mark the first 3 as up-to-date (cached)."""
-    for i, (source, (pushed, _branch)) in enumerate(OWNERS.items(), start=1):
+    for i, (source, (pushed, _branch, _stars)) in enumerate(OWNERS.items(), start=1):
         repo_dir = base_dir / config.source_to_dir(source)
         repo_dir.mkdir(parents=True, exist_ok=True)
         # Every repo already has a previous cache. Repos 4-6 will be "stale"
@@ -31,7 +34,7 @@ def _make_by_source(base_dir: Path) -> None:
         prev_pushed = pushed if i <= 3 else "1999-01-01T00:00:00Z"
         (repo_dir / config.META_FILE).write_text(
             f'{{"pushedAt": "{prev_pushed}", "schemaVersion": {config.SCHEMA_VERSION}, '
-            f'"skillCount": 1, "blobShas": {{}}}}'
+            f'"stars": {i * 100}, "skillCount": 1, "blobShas": {{}}}}'
         )
         (repo_dir / config.SCANNED_FILE).write_text(
             '{"path": "skills/a", "description": "cached"}\n'
@@ -54,7 +57,7 @@ def patched(monkeypatch, tmp_path):
         with lock:
             for _ in sources:
                 seen_threads.add(threading.get_ident())
-        return {s: OWNERS[s] for s in sources if s in OWNERS}
+        return {s: OWNERS[s] for s in sources if s in OWNERS}, set()
 
     def fake_blobs(source, branch, *, client=None):
         with lock:
@@ -95,14 +98,23 @@ def test_scan_writes_per_repo_artifacts(patched):
         repo_dir = base_dir / config.source_to_dir(source)
         meta = read_json(repo_dir / config.META_FILE)
         assert meta["pushedAt"] == OWNERS[source][0]  # updated to new pushed
+        assert meta["stars"] == OWNERS[source][2]  # stargazers persisted
         skills = read_jsonl(repo_dir / config.SCANNED_FILE)
         assert skills == [{"path": "skills/a", "description": "desc for a"}]
     # Up-to-date repos (1-3) keep their cached description untouched.
     for i in range(1, 4):
         source = f"owner{i}/repo{i}"
         repo_dir = base_dir / config.source_to_dir(source)
+        meta = read_json(repo_dir / config.META_FILE)
+        assert meta["stars"] == OWNERS[source][2]
         skills = read_jsonl(repo_dir / config.SCANNED_FILE)
         assert skills == [{"path": "skills/a", "description": "cached"}]
+    # The per-repo summary (scanned-repos.jsonl) records stars too.
+    repos = read_jsonl(scan_mod.SCANNED_REPOS)
+    assert len(repos) == 6
+    for rec in repos:
+        source = rec["source"]
+        assert rec["stars"] == OWNERS[source][2]
 
 
 def test_scan_force_rescans_everything(patched):
@@ -111,3 +123,60 @@ def test_scan_force_rescans_everything(patched):
     assert summary["repos_skipped"] == 0
     assert summary["repos_updated"] == 6
     assert summary["skills_scanned"] == 6
+
+
+def test_scan_removes_stale_data_for_missing_repo(monkeypatch, tmp_path):
+    base_dir = tmp_path / "by-source"
+    ghost = "ghost/removed"
+    repo_dir = base_dir / config.source_to_dir(ghost)
+    repo_dir.mkdir(parents=True)
+    # Stale cache from a previous run when the repo still existed.
+    (repo_dir / config.META_FILE).write_text(
+        f'{{"pushedAt": "2000-01-01T00:00:00Z", "schemaVersion": {config.SCHEMA_VERSION}}}'
+    )
+    (repo_dir / config.SCANNED_FILE).write_text(
+        '{"path": "skills/a", "description": "stale"}\n'
+    )
+    scanned_repos = tmp_path / "scanned-repos.jsonl"
+    monkeypatch.setattr(scan_mod, "SCANNED_REPOS", scanned_repos)
+    # The repo is definitively gone (404): meta fetch returns it as missing.
+    monkeypatch.setattr(
+        scan_mod,
+        "get_repo_metas",
+        lambda sources, *, client=None, max_workers=8: ({}, {ghost}),
+    )
+
+    def _fail(*args, **kwargs):  # noqa: ARG002
+        raise AssertionError("must not scan a repo that is gone (404)")
+
+    monkeypatch.setattr(scan_mod, "get_skill_blobs", _fail)
+    monkeypatch.setattr(scan_mod, "get_skill_descriptions", _fail)
+
+    summary = scan_repositories(base_dir=base_dir)
+
+    assert summary["repos_total"] == 1
+    assert summary["repos_gone"] == 1
+    assert summary["repos_failed"] == 0
+    assert not repo_dir.exists()  # stale scan data removed
+    assert read_jsonl(scanned_repos) == []  # repo not recorded
+
+
+def test_is_missing_repo_detects_404_in_cause_chain():
+    import httpx
+
+    from skills_index.github import _is_missing_repo
+    from skills_index.http import HttpError
+
+    req = httpx.Request("GET", "https://api.github.com/repos/o/r")
+    resp404 = httpx.Response(404, request=req)
+    inner404 = httpx.HTTPStatusError("404 on /repos/o/r", request=req, response=resp404)
+    err404 = HttpError("failed")
+    err404.__cause__ = inner404
+    assert _is_missing_repo(err404) is True
+
+    resp500 = httpx.Response(500, request=req)
+    inner500 = httpx.HTTPStatusError("500 on /repos/o/r", request=req, response=resp500)
+    err500 = HttpError("failed")
+    err500.__cause__ = inner500
+    assert _is_missing_repo(err500) is False
+    assert _is_missing_repo(RuntimeError("boom")) is False
