@@ -7,9 +7,10 @@ from pathlib import Path
 
 from .config import (
     BY_SOURCE_DIR,
+    FETCHED_FILE,
+    FETCHED_SKILLS,
     KEEP_FIELDS,
     SKILLS_API,
-    SKILLS_SH_ALL,
     Record,
     is_github_source,
     source_to_dir,
@@ -80,7 +81,7 @@ def filter_github(skills: list[Record]) -> tuple[list[Record], int]:
 
 
 def distribute_by_source(skills: list[Record], base_dir: Path = BY_SOURCE_DIR) -> tuple[int, int]:
-    """Group skills by source into `base_dir/<owner>__<repo>/skills-sh.jsonl`."""
+    """Group skills by source into `base_dir/<owner>__<repo>/fetched.jsonl`."""
     groups: dict[str, list[Record]] = {}
     for s in skills:
         src = str(s.get("source", "")).strip()
@@ -90,9 +91,9 @@ def distribute_by_source(skills: list[Record], base_dir: Path = BY_SOURCE_DIR) -
     total = 0
     for src, items in groups.items():
         dir_path = base_dir / source_to_dir(src)
-        write_jsonl(dir_path / "skills-sh.jsonl", items)
+        write_jsonl(dir_path / FETCHED_FILE, items)
         total += len(items)
-        print(f"  wrote {dir_path / 'skills-sh.jsonl'}: {len(items)}")
+        print(f"  wrote {dir_path / FETCHED_FILE}: {len(items)}")
     return len(groups), total
 
 
@@ -109,8 +110,8 @@ def run_fetch(*, max_pages: int = 0, token: str = "") -> list[Record]:
     skills, dropped = filter_github(raw)
     print(f"filtered non-GitHub sources: dropped {dropped}, kept {len(skills)}")
 
-    write_jsonl(SKILLS_SH_ALL, skills)
-    print(f"saved {len(skills)} skills to {SKILLS_SH_ALL}")
+    write_jsonl(FETCHED_SKILLS, skills)
+    print(f"saved {len(skills)} skills to {FETCHED_SKILLS}")
 
     dirs, total = distribute_by_source(skills)
     print(f"distributed into {dirs} source dirs, {total} records")

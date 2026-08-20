@@ -6,10 +6,10 @@ from pathlib import Path
 
 from .config import (
     BY_SOURCE_DIR,
-    GITHUB_FILE,
+    FETCHED_SKILLS,
     INDEX_JSONL,
     JSON,
-    SKILLS_SH_ALL,
+    SCANNED_FILE,
     dir_to_source,
 )
 from .io_utils import read_jsonl, write_jsonl
@@ -20,14 +20,14 @@ Record = dict[str, JSON]
 def run_index(base_dir: Path = BY_SOURCE_DIR) -> list[Record]:
     """Merge the fetch output with every repo's scanned skills into index.jsonl.
 
-    - `skills-sh-all.jsonl` provides the skills.sh metadata (name / installs / ...).
-    - each `skills-github.jsonl` provides the scanned GitHub URL + path.
+    - `fetched-skills.jsonl` provides the skills.sh metadata (name / installs / ...).
+    - each `scanned.jsonl` provides the scanned GitHub URL + path.
     Records are joined on `source` + `skillId`; scanned fields (url, path)
     override / fill in the fetch-only records.
     """
-    fetched = {_key(r): r for r in read_jsonl(SKILLS_SH_ALL)}
+    fetched = {_key(r): r for r in read_jsonl(FETCHED_SKILLS)}
     if not fetched:
-        print(f"[index] no fetched data at {SKILLS_SH_ALL}; run `fetch` first")
+        print(f"[index] no fetched data at {FETCHED_SKILLS}; run `fetch` first")
         write_jsonl(INDEX_JSONL, [])
         return []
 
@@ -40,7 +40,7 @@ def run_index(base_dir: Path = BY_SOURCE_DIR) -> list[Record]:
     scanned_count = 0
     for dir_name in subdirs:
         source = dir_to_source(dir_name)
-        gh_path = base_dir / dir_name / GITHUB_FILE
+        gh_path = base_dir / dir_name / SCANNED_FILE
         for rec in read_jsonl(gh_path):
             skill_id = Path(str(rec.get("path", ""))).name
             key = (source, skill_id)

@@ -17,20 +17,23 @@ DATA_DIR = ROOT / "data"
 BY_SOURCE_DIR = DATA_DIR / "by-source"
 
 # fetch 的中间产物（skills.sh 原始数据汇总）；最终索引 index.jsonl 由 index 步骤生成
-SKILLS_SH_ALL = DATA_DIR / "skills-sh-all.jsonl"
+FETCHED_SKILLS = DATA_DIR / "fetched-skills.jsonl"
 # 最终合并产物（fetch + scan 结合），由 `index` 命令生成（以 skill 为单位平铺）
 INDEX_JSONL = DATA_DIR / "index.jsonl"
 # scan 的汇总产物（每个仓库一行，含更新时间、技能数量、技能详情）；由 `scan` 命令生成
-SCAN_ALL_JSONL = DATA_DIR / "scan-all.jsonl"
+SCANNED_REPOS = DATA_DIR / "scanned-repos.jsonl"
 
 # --- External endpoints ---
 SKILLS_API = "https://skills.sh/api/skills/all-time"
 GITHUB_API = "https://api.github.com"
 
 # --- File names produced per repository under data/by-source/<owner>__<repo>/ ---
-SKILLS_SH_FILE = "skills-sh.jsonl"
-GITHUB_FILE = "skills-github.jsonl"
-REPO_META_FILE = "github-meta.json"
+FETCHED_FILE = "fetched.jsonl"
+SCANNED_FILE = "scanned.jsonl"
+META_FILE = "meta.json"
+
+# Bump when the scan output format changes so stale caches are rebuilt once.
+SCHEMA_VERSION = 2
 
 # Fields kept from the skills.sh payload.
 KEEP_FIELDS: set[str] = {"source", "skillId", "installs", "weeklyInstalls", "url"}

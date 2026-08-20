@@ -28,7 +28,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     sub.add_parser(
-        "index", help="merge fetched + scanned data into data/index.jsonl + data/index-byrepo.jsonl"
+        "index", help="merge fetched + scanned data into data/index.jsonl"
     )
 
     return p
