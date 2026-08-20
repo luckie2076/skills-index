@@ -240,6 +240,8 @@ def scan_repositories(*, force: bool = False, base_dir: Path = BY_SOURCE_DIR) ->
             if res is not None:
                 repos.append(res)
 
+    # Sort by stars descending (repos without a star count sink to the end).
+    repos.sort(key=lambda r: r.get("stars") or 0, reverse=True)
     write_jsonl(SCANNED_REPOS, repos)
     print(
         f"scan done: skipped {counters['skipped']} unchanged, "
@@ -271,10 +273,8 @@ def _summarize_repo(repo_dir: Path, meta_path: Path, source: str) -> JSON:
     skills = read_jsonl(repo_dir / SCANNED_FILE)
     return {
         "source": source,
-        "branch": meta.get("branch"),
         "pushedAt": meta.get("pushedAt"),
         "stars": meta.get("stars"),
-        "lastScanned": meta.get("lastScanned"),
         "skillCount": meta.get("skillCount", len(skills)),
         "skills": [s["path"] for s in skills],
     }

@@ -16,6 +16,32 @@ from .io_utils import read_jsonl, write_jsonl
 
 Record = dict[str, JSON]
 
+# Column order for the emitted index.jsonl records.
+_INDEX_FIELD_ORDER = (
+    "skillId",
+    "source",
+    "description",
+    "installs",
+    "weeklyInstalls",
+    "path",
+)
+
+
+def _ordered(rec: Record) -> Record:
+    """Return `rec` with keys ordered for index.jsonl output.
+
+    Known fields come first in a stable order; any remaining keys are appended
+    in their original (insertion) order.
+    """
+    out: Record = {}
+    for k in _INDEX_FIELD_ORDER:
+        if k in rec:
+            out[k] = rec[k]
+    for k, v in rec.items():
+        if k not in out:
+            out[k] = v
+    return out
+
 
 def run_index(base_dir: Path = BY_SOURCE_DIR) -> tuple[list[Record], dict]:
     """Merge the fetch output with every repo's scanned skills into index.jsonl.
@@ -75,7 +101,7 @@ def run_index(base_dir: Path = BY_SOURCE_DIR) -> tuple[list[Record], dict]:
     # Only skills confirmed by a repo scan belong in the index; fetched skills
     # missing from the scan are dropped (keeps fetched order).
     not_in_repo = len(fetched) - len(matched_keys)
-    result = [merged[k] for k in fetched if k in matched_keys]
+    result = [_ordered(merged[k]) for k in fetched if k in matched_keys]
     write_jsonl(INDEX_JSONL, result)
     summary["scanned_merged"] = scanned_count
     summary["orphans"] = orphan_count
