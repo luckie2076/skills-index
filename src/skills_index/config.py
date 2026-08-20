@@ -73,16 +73,22 @@ def is_github_source(source: str) -> bool:
 
 
 def load_github_token() -> str:
-    """Return a GitHub token: prefer the env var, then a local `.env` file."""
-    token = os.environ.get("GITHUB_TOKEN", "").strip()
-    if token:
-        return token
+    """Return a GitHub token: prefer `GH_PAT`, then `GITHUB_TOKEN`, then `.env`.
+
+    `GH_PAT` is a personal access token (5000 req/h) recommended for CI; the
+    Actions-provided `GITHUB_TOKEN` is capped at 1000 req/h per repository.
+    """
+    for var in ("GH_PAT", "GITHUB_TOKEN"):
+        token = os.environ.get(var, "").strip()
+        if token:
+            return token
     env_file = ROOT / ".env"
     try:
         for line in env_file.read_text(encoding="utf-8").splitlines():
             line = line.strip()
-            if line.startswith("GITHUB_TOKEN="):
-                return line.split("=", 1)[1].strip().strip('"').strip("'")
+            for var in ("GH_PAT=", "GITHUB_TOKEN="):
+                if line.startswith(var):
+                    return line.split("=", 1)[1].strip().strip('"').strip("'")
     except FileNotFoundError:
         pass
     return ""

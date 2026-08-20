@@ -1,20 +1,28 @@
-"""GitHub API surface: branches, skill directories, metadata, and SKILL.md content.
+"""GitHub API surface: repo metadata and SKILL.md content.
 
-Only metadata and tree/contents/blob endpoints are used -- repositories are
-never cloned or downloaded.
+Only the REST metadata endpoint (per-repo pushed_at / default_branch) and the
+codeload tarball endpoint are used. Repositories are never cloned; each repo's
+SKILL.md files are read from a single tarball download, which is NOT billed
+against the REST API rate limit -- keeping full scans well under the Actions
+GITHUB_TOKEN quota (1000 req/h) and any personal PAT (5000 req/h).
 """
 
 from __future__ import annotations
 
-import base64
+import hashlib
+import io
+import tarfile
 from concurrent.futures import ThreadPoolExecutor
 from functools import cache
+from urllib.parse import quote
 
 import httpx
 import yaml
 
-from .config import Record
 from .http import get_json, new_github_client
+
+# codeload serves archive downloads and is not part of the REST API rate limit.
+CODELOAD = "https://codeload.github.com"
 
 
 # Process-wide cache (valid for a single run only).
@@ -39,94 +47,88 @@ def get_default_branch(source: str, *, client: httpx.Client | None = None) -> st
     return _repo_info(source, client=client)[1]
 
 
-def _parse_skill_dirs(tree_items: list[Record]) -> dict[str, str]:
-    """From a git tree, return {basename: relative_path} for dirs with SKILL.md."""
-    return {name: path for name, (path, _sha) in _parse_skill_blobs(tree_items).items()}
+def _git_blob_sha(content: bytes) -> str:
+    """Return the git blob sha1 (`sha1("blob <len>\\0" + content)`).
+
+    Identical to the blob sha GitHub exposes on trees/contents endpoints, so
+    locally computed fingerprints stay comparable across runs and machines.
+    """
+    return hashlib.sha1(f"blob {len(content)}\0".encode() + content).hexdigest()
 
 
-def _parse_skill_blobs(tree_items: list[Record]) -> dict[str, tuple[str, str]]:
-    """From a git tree, return {basename: (relative_path, blob_sha)} for SKILL.md blobs."""
+# Per-run cache: source -> (blobs, contents). Populated once per repo by the
+# first tarball download; `get_skill_descriptions` reuses the cached contents
+# so no additional API calls are made.
+#   blobs:    {basename: (relative_path, blob_sha)}
+#   contents: {relative_path: raw SKILL.md text}
+_tarball_scan: dict[str, tuple[dict[str, tuple[str, str]], dict[str, str]]] = {}
+
+
+def _parse_tarball(raw: bytes) -> tuple[dict[str, tuple[str, str]], dict[str, str]]:
+    """Scan a repo tarball for every SKILL.md; return (blobs, contents).
+
+    The tarball has a top-level `<repo>-<sha>/` directory, which is stripped so
+    `relative_path` is the path within the repo (as used elsewhere).
+    """
     blobs: dict[str, tuple[str, str]] = {}
-    for item in tree_items:
-        if item.get("type") == "blob" and item.get("path", "").endswith("/SKILL.md"):
-            rel = item["path"][: -len("/SKILL.md")]
-            blobs[rel.rsplit("/", 1)[-1]] = (rel, str(item.get("sha", "")))
-    return blobs
+    contents: dict[str, str] = {}
+    with tarfile.open(fileobj=io.BytesIO(raw), mode="r:gz") as tf:
+        for member in tf.getmembers():
+            if not member.isfile():
+                continue
+            parts = member.name.split("/", 1)
+            if len(parts) < 2:
+                continue  # the top-level directory entry itself
+            rel = parts[1]
+            if not rel.endswith("/SKILL.md"):
+                continue
+            f = tf.extractfile(member)
+            if f is None:
+                continue
+            data = f.read()
+            skill_dir = rel[: -len("/SKILL.md")]
+            blobs[skill_dir.rsplit("/", 1)[-1]] = (skill_dir, _git_blob_sha(data))
+            contents[skill_dir] = data.decode("utf-8", errors="replace")
+    return blobs, contents
 
 
-def _walk_contents(  # noqa: E501
-    client: httpx.Client, owner: str, repo: str, branch: str, path: str
-) -> dict[str, tuple[str, str]]:
-    """Recursively walk the Contents API (fallback for truncated trees).
-
-    Like `_skill_blobs`, the tree is resolved from `HEAD` rather than a guessed
-    branch name; `branch` is unused for the request and kept only for signature
-    compatibility.
-    """
-    out: dict[str, tuple[str, str]] = {}
-    try:
-        url = f"/repos/{owner}/{repo}/contents/{path}?ref=HEAD"
-        items: list[Record] = get_json(client, url)
-    except Exception:
-        return out
-    for it in items:
-        if it.get("type") == "dir":
-            out.update(_walk_contents(client, owner, repo, branch, it["path"]))
-        elif it.get("type") == "file" and it.get("name") == "SKILL.md":
-            rel = it["path"][: -len("/SKILL.md")]
-            out[rel.rsplit("/", 1)[-1]] = (rel, str(it.get("sha", "")))
-    return out
-
-
-@cache
-def _skill_blobs(  # noqa: E501
-    source: str, branch: str, *, client: httpx.Client | None = None
-) -> dict[str, tuple[str, str]]:
-    """Return {basename: (relative_path, blob_sha)} for every SKILL.md (cached).
-
-    `branch` is only used as part of the cache key / display label; the actual
-    tree is always resolved from `HEAD` so we never depend on a guessed branch
-    name (and avoid the `default_branch` fallback to the literal "main").
-    """
+def _scan_repo(
+    source: str, branch: str, *, client: httpx.Client
+) -> tuple[dict[str, tuple[str, str]], dict[str, str]]:
+    """Download (once) and scan a repo tarball; return (blobs, contents)."""
+    cached = _tarball_scan.get(source)
+    if cached is not None:
+        return cached
     owner, repo = _split(source)
-    client = client or new_github_client()
-    data = get_json(client, f"/repos/{owner}/{repo}/git/trees/HEAD?recursive=1")
-    blobs = _parse_skill_blobs(data.get("tree", []))
-    if data.get("truncated"):
-        blobs.update(_walk_contents(client, owner, repo, branch, "skills"))
-    return blobs
+    url = f"{CODELOAD}/{owner}/{repo}/tar.gz/{quote(branch, safe='')}"
+    resp = client.get(url)
+    resp.raise_for_status()
+    blobs, contents = _parse_tarball(resp.content)
+    _tarball_scan[source] = (blobs, contents)
+    return blobs, contents
 
 
-@cache
 def get_skill_blobs(  # noqa: E501
     source: str, branch: str = "HEAD", *, client: httpx.Client | None = None
 ) -> dict[str, tuple[str, str]]:
-    """Return {basename: (relative_path, blob_sha)} for every SKILL.md (cached).
+    """Return {basename: (relative_path, blob_sha)} for every SKILL.md.
 
-    The blob sha is a content-addressed fingerprint of each SKILL.md file, used
-    for file-level incremental rescans. The tree is always resolved from `HEAD`
-    (see `_skill_blobs`); `branch` is unused for the request and only kept for
-    backward-compatible call signatures.
+    Backed by a single codeload tarball download (not billed to the REST quota);
+    the blob sha is computed locally with git's exact algorithm, keeping the
+    file-level incremental fingerprints identical to the previous tree-based
+    approach.
     """
-    return _skill_blobs(source, "HEAD", client=client)
+    client = client or new_github_client()
+    blobs, _contents = _scan_repo(source, branch, client=client)
+    return blobs
 
 
-@cache
 def get_skill_dirs(  # noqa: E501
     source: str, branch: str = "HEAD", *, client: httpx.Client | None = None
 ) -> dict[str, str]:
     """Return {basename: relative_path} of every dir containing SKILL.md."""
-    blobs = get_skill_blobs(source, "HEAD", client=client)
+    blobs = get_skill_blobs(source, branch, client=client)
     return {name: path for name, (path, _sha) in blobs.items()}
-
-
-def _fetch_blob(client: httpx.Client, owner: str, repo: str, sha: str) -> str:
-    """Fetch a git blob and decode it as UTF-8 text."""
-    data = get_json(client, f"/repos/{owner}/{repo}/git/blobs/{sha}")
-    if data.get("encoding") != "base64":
-        return ""
-    raw = base64.b64decode(data.get("content", ""))
-    return raw.decode("utf-8", errors="replace")
 
 
 def extract_description(markdown: str) -> str:
@@ -146,47 +148,26 @@ def extract_description(markdown: str) -> str:
     return str(desc).strip() if desc else ""
 
 
-# Per-run content cache keyed by blob sha (shas are content-addressed, so a
-# sha uniquely identifies a file, even across repos).
-_blob_content: dict[str, str] = {}
-
-
 def get_skill_descriptions(  # noqa: E501
     source: str,
     blobs: dict[str, tuple[str, str]],
     *,
     client: httpx.Client | None = None,
 ) -> dict[str, str]:
-    """Return {basename: description}, fetching only the given SKILL.md blobs.
+    """Return {basename: description} from the already-downloaded tarball.
 
     `blobs` is a {basename: (relative_path, blob_sha)} subset -- typically just
-    the blobs whose sha changed since the last scan -- so unchanged skills are
-    never re-downloaded.
+    the blobs whose sha changed since the last scan. The tarball was already
+    fetched by `get_skill_blobs` (cached in `_tarball_scan`), so this performs
+    no network I/O; unchanged skills keep their old records via `scan`.
     """
     if not blobs:
         return {}
-    owner, repo = _split(source)
     client = client or new_github_client()
-
-    def work(name: str) -> tuple[str, str]:
-        _path, sha = blobs[name]
-        if not sha:
-            return name, ""
-        content = _blob_content.get(sha)
-        if content is None:
-            try:
-                content = _fetch_blob(client, owner, repo, sha)
-            except Exception as exc:
-                print(f"  [skip] {name}: blob fetch failed - {exc}")
-                return name, ""
-            _blob_content[sha] = content
-        return name, extract_description(content)
-
+    _full_blobs, contents = _scan_repo(source, "HEAD", client=client)
     out: dict[str, str] = {}
-    # Blob fetches are network-bound; fetch concurrently to cut wall-clock time.
-    with ThreadPoolExecutor(max_workers=8) as ex:
-        for name, desc in ex.map(work, list(blobs.keys())):
-            out[name] = desc
+    for name, (path, _sha) in blobs.items():
+        out[name] = extract_description(contents.get(path, ""))
     return out
 
 

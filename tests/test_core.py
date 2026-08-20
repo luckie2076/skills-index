@@ -2,18 +2,31 @@
 
 from __future__ import annotations
 
+import io
+import tarfile
 from pathlib import Path
 
 from skills_index import config
 from skills_index.fetch import filter_github
 from skills_index.github import (
-    _parse_skill_blobs,
-    _parse_skill_dirs,
+    _git_blob_sha,
+    _parse_tarball,
     extract_description,
     get_skill_descriptions,
 )
 from skills_index.io_utils import read_jsonl, write_jsonl
 from skills_index.scan import merge_skill_records, plan_blob_fetches
+
+
+def _make_tarball(files: dict[str, bytes]) -> bytes:
+    """Build an in-memory gzipped tarball with a top-level `repo-<sha>/` dir."""
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tf:
+        for name, data in files.items():
+            info = tarfile.TarInfo(f"repo-abc123/{name}")
+            info.size = len(data)
+            tf.addfile(info, io.BytesIO(data))
+    return buf.getvalue()
 
 
 def test_source_dir_roundtrip() -> None:
@@ -57,24 +70,39 @@ def test_read_jsonl_missing_file(tmp_path: Path) -> None:
     assert read_jsonl(tmp_path / "nope.jsonl") == []
 
 
-def test_parse_skill_dirs() -> None:
-    tree = [
-        {"type": "blob", "path": "skills/foo/SKILL.md", "sha": "abc"},
-        {"type": "blob", "path": "skills/bar/baz/SKILL.md", "sha": "def"},
-        {"type": "blob", "path": "skills/foo/README.md"},
-        {"type": "tree", "path": "skills/foo"},
-    ]
-    dirs = _parse_skill_dirs(tree)
-    assert dirs == {"foo": "skills/foo", "baz": "skills/bar/baz"}
+def test_parse_tarball_finds_skill_blobs() -> None:
+    raw = _make_tarball(
+        {
+            "skills/foo/SKILL.md": b"---\ndescription: Foo\n---\n",
+            "skills/foo/README.md": b"ignored",
+            "skills/bar/baz/SKILL.md": b"---\ndescription: Baz\n---\n",
+        }
+    )
+    blobs, contents = _parse_tarball(raw)
+    assert blobs == {
+        "foo": ("skills/foo", _git_blob_sha(b"---\ndescription: Foo\n---\n")),
+        "baz": ("skills/bar/baz", _git_blob_sha(b"---\ndescription: Baz\n---\n")),
+    }
+    assert contents["skills/foo"] == "---\ndescription: Foo\n---\n"
 
 
-def test_parse_skill_blobs_carries_sha() -> None:
-    tree = [
-        {"type": "blob", "path": "skills/foo/SKILL.md", "sha": "abc123"},
-        {"type": "blob", "path": "skills/foo/README.md", "sha": "nope"},
-        {"type": "tree", "path": "skills/foo"},
-    ]
-    assert _parse_skill_blobs(tree) == {"foo": ("skills/foo", "abc123")}
+def test_parse_tarball_skips_non_skill_files() -> None:
+    raw = _make_tarball(
+        {
+            "skills/foo/README.md": b"readme",
+            "not-a-skill.md": b"nope",
+            "README.md": b"nope",
+        }
+    )
+    blobs, _contents = _parse_tarball(raw)
+    assert blobs == {}
+
+
+def test_git_blob_sha_matches_known_value() -> None:
+    # The empty blob has a canonical sha1 in git ("blob 0\0").
+    assert _git_blob_sha(b"") == "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391"
+    # Content-addressed: different bytes -> different sha.
+    assert _git_blob_sha(b"a") != _git_blob_sha(b"b")
 
 
 def test_extract_description_from_frontmatter() -> None:
@@ -157,3 +185,24 @@ def test_merge_skill_records_force_rebuilds_all() -> None:
 
 def test_get_skill_descriptions_empty_subset_skips_network() -> None:
     assert get_skill_descriptions("owner/repo", {}) == {}
+
+
+def test_load_github_token_prefers_gh_pat(monkeypatch) -> None:
+    monkeypatch.setenv("GH_PAT", "pat-token")
+    monkeypatch.setenv("GITHUB_TOKEN", "actions-token")
+    assert config.load_github_token() == "pat-token"
+
+
+def test_load_github_token_falls_back_to_github_token(monkeypatch) -> None:
+    monkeypatch.delenv("GH_PAT", raising=False)
+    monkeypatch.setenv("GITHUB_TOKEN", "actions-token")
+    assert config.load_github_token() == "actions-token"
+
+
+def test_load_github_token_reads_env_file(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.delenv("GH_PAT", raising=False)
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    env = tmp_path / ".env"
+    env.write_text('GITHUB_TOKEN="from-file"\n')
+    monkeypatch.setattr(config, "ROOT", tmp_path)
+    assert config.load_github_token() == "from-file"

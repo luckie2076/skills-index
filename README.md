@@ -73,7 +73,7 @@ curl -L -o data.tar.gz \
 
 ### 2. 扫描 GitHub 仓库（`scan`）
 
-- **极简说明**：按 `pushed_at` 增量扫描各 GitHub 仓库，找出其中真正的 `SKILL.md` 技能定义（跳过未变更的仓库）。增量粒度是**文件级 blob sha**：`pushed_at` 变化的仓库，通过 Git Tree API 拿到全仓目录树，只对 sha 相比上次发生变化的 `SKILL.md` 重新拉取内容（Git Blob API）并解析 YAML frontmatter 提取 `description`，未变化的技能直接复用本地缓存；从目录树中消失的技能会被自动移除。每个技能只记录仓库内相对路径 `path`，完整 GitHub 目录 URL 由调用方用 `source` + `path` 拼接。
+- **极简说明**：按 `pushed_at` 增量扫描各 GitHub 仓库，找出其中真正的 `SKILL.md` 技能定义（跳过未变更的仓库）。增量粒度是**文件级 blob sha**：`pushed_at` 变化的仓库，下载其**代码压缩包（codeload tarball，不计入 REST API 速率配额）**，本地解压遍历所有 `SKILL.md`，用 git 相同算法在本地计算每个文件的 blob sha（与 GitHub 的 blob sha 一致），只对 sha 相比上次发生变化的 `SKILL.md` 重新解析 YAML frontmatter 提取 `description`，未变化的技能直接复用本地缓存；从仓库中消失的技能会被自动移除。每个技能只记录仓库内相对路径 `path`，完整 GitHub 目录 URL 由调用方用 `source` + `path` 拼接。
 - **对应命令**：`uv run skills-index scan`（加 `--force` 可强制全量重扫；扫描产物格式升级时会自动触发一次性全量重扫）
 - **产物形状**：在每个仓库目录下输出 `scanned.jsonl`（扫描发现的所有技能，含 `path` / `description`）与 `meta.json`（仓库元信息，含 `blobShas` 文件级增量指纹与 `schemaVersion`）。
 
@@ -151,7 +151,7 @@ data/
 - Python >= 3.11
 - [`uv`](https://docs.astral.sh/uv/)
 
-可选：设置 `GITHUB_TOKEN`（环境变量或 `.env` 文件）可将 GitHub 速率限制从 60 次/小时提升到 5000 次/小时，并校验确切的技能路径。
+可选：设置 `GITHUB_TOKEN`（环境变量或 `.env` 文件）可消除未认证的 60 次/小时限制。注意配额差异：GitHub Actions 内置 `GITHUB_TOKEN` 为 **1000 次/小时/仓库**；推荐在仓库 Secrets 里配置 `GH_PAT`（个人访问令牌，**5000 次/小时**），代码会优先使用它。`SKILL.md` 内容通过 codeload tarball 获取，不计入以上配额。
 
 ## 安装
 

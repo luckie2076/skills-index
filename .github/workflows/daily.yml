@@ -93,9 +93,13 @@ jobs:
           mkdir -p data
           cp -r "$RUNNER_TEMP"/data/by-source data/
 
+      # GH_PAT (personal access token, 5000 req/h) is preferred over the
+      # Actions GITHUB_TOKEN (1000 req/h per repo) to keep the meta phase fast;
+      # tarball downloads (SKILL.md content) are not billed to the quota at all.
       - name: Fetch + scan + index
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_PAT: ${{ secrets.GH_PAT }}
         run: uv run skills-index update ${{ steps.scope.outputs.pages_arg }}
 
       - name: Package data snapshot
