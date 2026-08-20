@@ -16,3 +16,6 @@ htmlcov/
 
 # IDE internal data
 .codebuddy/
+
+# Generated dataset (published via GitHub Releases, not committed)
+data/

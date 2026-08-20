@@ -57,10 +57,15 @@ def _parse_skill_blobs(tree_items: list[Record]) -> dict[str, tuple[str, str]]:
 def _walk_contents(  # noqa: E501
     client: httpx.Client, owner: str, repo: str, branch: str, path: str
 ) -> dict[str, tuple[str, str]]:
-    """Recursively walk the Contents API (fallback for truncated trees)."""
+    """Recursively walk the Contents API (fallback for truncated trees).
+
+    Like `_skill_blobs`, the tree is resolved from `HEAD` rather than a guessed
+    branch name; `branch` is unused for the request and kept only for signature
+    compatibility.
+    """
     out: dict[str, tuple[str, str]] = {}
     try:
-        url = f"/repos/{owner}/{repo}/contents/{path}?ref={branch}"
+        url = f"/repos/{owner}/{repo}/contents/{path}?ref=HEAD"
         items: list[Record] = get_json(client, url)
     except Exception:
         return out
@@ -77,10 +82,15 @@ def _walk_contents(  # noqa: E501
 def _skill_blobs(  # noqa: E501
     source: str, branch: str, *, client: httpx.Client | None = None
 ) -> dict[str, tuple[str, str]]:
-    """Return {basename: (relative_path, blob_sha)} for every SKILL.md (cached)."""
+    """Return {basename: (relative_path, blob_sha)} for every SKILL.md (cached).
+
+    `branch` is only used as part of the cache key / display label; the actual
+    tree is always resolved from `HEAD` so we never depend on a guessed branch
+    name (and avoid the `default_branch` fallback to the literal "main").
+    """
     owner, repo = _split(source)
     client = client or new_github_client()
-    data = get_json(client, f"/repos/{owner}/{repo}/git/trees/{branch}?recursive=1")
+    data = get_json(client, f"/repos/{owner}/{repo}/git/trees/HEAD?recursive=1")
     blobs = _parse_skill_blobs(data.get("tree", []))
     if data.get("truncated"):
         blobs.update(_walk_contents(client, owner, repo, branch, "skills"))
@@ -89,22 +99,24 @@ def _skill_blobs(  # noqa: E501
 
 @cache
 def get_skill_blobs(  # noqa: E501
-    source: str, branch: str, *, client: httpx.Client | None = None
+    source: str, branch: str = "HEAD", *, client: httpx.Client | None = None
 ) -> dict[str, tuple[str, str]]:
     """Return {basename: (relative_path, blob_sha)} for every SKILL.md (cached).
 
     The blob sha is a content-addressed fingerprint of each SKILL.md file, used
-    for file-level incremental rescans.
+    for file-level incremental rescans. The tree is always resolved from `HEAD`
+    (see `_skill_blobs`); `branch` is unused for the request and only kept for
+    backward-compatible call signatures.
     """
-    return _skill_blobs(source, branch, client=client)
+    return _skill_blobs(source, "HEAD", client=client)
 
 
 @cache
 def get_skill_dirs(  # noqa: E501
-    source: str, branch: str, *, client: httpx.Client | None = None
+    source: str, branch: str = "HEAD", *, client: httpx.Client | None = None
 ) -> dict[str, str]:
     """Return {basename: relative_path} of every dir containing SKILL.md."""
-    blobs = get_skill_blobs(source, branch, client=client)
+    blobs = get_skill_blobs(source, "HEAD", client=client)
     return {name: path for name, (path, _sha) in blobs.items()}
 
 
