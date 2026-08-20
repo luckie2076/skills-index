@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import argparse
+import shutil
 import sys
 import time
+from pathlib import Path
 
+from .config import BY_SOURCE_DIR, DATA_DIR, FETCHED_SKILLS, INDEX_JSONL, SCANNED_REPOS
 from .fetch import run_fetch
 from .index import run_index
 from .scan import scan_repositories
+from .io_utils import read_jsonl, write_jsonl
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -46,6 +50,33 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
+def clean_workspace() -> None:
+    """Remove previous run artifacts so a one-shot `update` rebuilds from zero.
+
+    `update` is a from-scratch pipeline: fetch -> scan -> index. Leftover files
+    from an earlier run (e.g. a stale full scan on a machine that also ran a
+    single-page test) would otherwise leak into `index.jsonl`, making the
+    published artifacts inconsistent with the fetched data. We wipe the root
+    summaries and every per-source intermediate file, but keep the directory
+    tree so fresh runs reconstruct it.
+    """
+    for root_file in (FETCHED_SKILLS, INDEX_JSONL, SCANNED_REPOS):
+        if root_file.exists():
+            root_file.unlink()
+            print(f"[clean] removed {root_file.name}")
+
+    # Wipe the entire per-source tree so `scan` only ever processes repos that
+    # `fetch` just wrote. Keeping stale dirs (with cached meta.json) would let
+    # their scanned skills leak into index.jsonl, desyncing it from the fetched
+    # data. `update` is a from-scratch pipeline; incremental reuse is opt-in via
+    # the separate `fetch`/`scan`/`index` commands.
+    if BY_SOURCE_DIR.exists():
+        for repo_dir in BY_SOURCE_DIR.iterdir():
+            if repo_dir.is_dir():
+                shutil.rmtree(repo_dir)
+        print(f"[clean] wiped per-source tree under {BY_SOURCE_DIR.name}")
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
 
@@ -63,6 +94,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "update":
         t0 = time.monotonic()
+        clean_workspace()
         run_fetch(max_pages=args.pages)
         t_fetch = time.monotonic() - t0
         scan_repositories(force=args.force)

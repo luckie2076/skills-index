@@ -38,13 +38,21 @@ def run_index(base_dir: Path = BY_SOURCE_DIR) -> list[Record]:
         if d.is_dir() and d.name.count("__") == 1
     )
     scanned_count = 0
+    orphan_count = 0
     for dir_name in subdirs:
         source = dir_to_source(dir_name)
         gh_path = base_dir / dir_name / SCANNED_FILE
         for rec in read_jsonl(gh_path):
             skill_id = Path(str(rec.get("path", ""))).name
             key = (source, skill_id)
-            base = merged.get(key, {"source": source, "skillId": skill_id})
+            base = merged.get(key)
+            if base is None:
+                # GitHub repo contains a SKILL.md not registered on skills.sh.
+                # The index is scoped to the skills.sh ranking, so these
+                # "orphan" skills are intentionally excluded from index.jsonl
+                # (they remain available in data/by-source for other uses).
+                orphan_count += 1
+                continue
             base.update(rec)
             merged[key] = base
             scanned_count += 1
@@ -53,7 +61,7 @@ def run_index(base_dir: Path = BY_SOURCE_DIR) -> list[Record]:
     write_jsonl(INDEX_JSONL, result)
     msg = (
         f"[index] merged {len(fetched)} fetched + {scanned_count} scanned "
-        f"-> {len(result)} in {INDEX_JSONL}"
+        f"(skipped {orphan_count} orphan) -> {len(result)} in {INDEX_JSONL}"
     )
     print(msg)
     return result
