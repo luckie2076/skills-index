@@ -8,6 +8,8 @@
 
 索引数据**不提交进 git 主分支**（见 `.gitignore`）。数据由 GitHub Actions 每日（UTC 0 点）自动生成，并作为 Release 资产发布。消费方无需 clone 仓库，直接拉取最新快照即可。
 
+`data.tar.gz` 同时充当下一轮 CI 增量扫描的缓存载体：main 分支每次运行前会从上一个 `data-` Release 恢复 `data/by-source/`（含 `meta.json` / `scanned.jsonl` 增量指纹），使跨 runner 的增量扫描真正生效。
+
 ### 发布的产物
 
 每个 Release 包含：
@@ -113,17 +115,17 @@ curl -L -o data.tar.gz \
 
 - **极简说明**：把第 1~3 步串成一条命令，本地测试和 CI 统一入口。
 - **对应命令**：`uv run skills-index update`
-- **说明**：`--pages` 透传给 `fetch`（限制页数，便于冒烟测试），`--force` 透传给 `scan`（强制全量重扫）。等价于依次执行 `fetch` + `scan` + `index`。
+- **说明**：默认走**增量**——保留本地 `data/by-source/` 缓存（不清空），fetch 后自动清理不在本次数据中的 stale 仓库目录，随后 `scan` 复用 `pushed_at` / `blobShas` 指纹，只扫描有变化的仓库与 `SKILL.md`。`--force` 强制全量重建（先清空缓存再重扫所有仓库，用于保证一致性）；`--pages N` 只拉取 N 页 skills.sh 数据，专供冒烟测试，同样走全量路径（部分 fetch 会破坏增量缓存链条，故不启用增量）。
 
 ```bash
-# 完整更新
+# 完整更新（增量：保留缓存，只扫变化的仓库/文件）
 uv run skills-index update
 
-# 本地快速冒烟测试：只拉 1 页 skills.sh 数据 + 增量扫描
-uv run skills-index update --pages 1
-
-# 强制全量重扫（忽略缓存的 pushed_at / blobShas）
+# 强制全量重建（清空缓存后重扫所有仓库）
 uv run skills-index update --force
+
+# 本地快速冒烟测试：只拉 1 页 skills.sh 数据（全量路径，不影响缓存链）
+uv run skills-index update --pages 1
 ```
 
 每日数据生成即由 GitHub Actions 调用 `uv run skills-index update` 完成（见 `.github/workflows/daily.yml`）。

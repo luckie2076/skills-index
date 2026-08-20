@@ -2,16 +2,19 @@
 
 from __future__ import annotations
 
+import shutil
 import time
 from pathlib import Path
 
 from .config import (
     BY_SOURCE_DIR,
+    DIR_SEP,
     FETCHED_FILE,
     FETCHED_SKILLS,
     KEEP_FIELDS,
     SKILLS_API,
     Record,
+    dir_to_source,
     is_github_source,
     source_to_dir,
 )
@@ -95,6 +98,26 @@ def distribute_by_source(skills: list[Record], base_dir: Path = BY_SOURCE_DIR) -
         total += len(items)
         print(f"  wrote {dir_path / FETCHED_FILE}: {len(items)}")
     return len(groups), total
+
+
+def prune_stale_repos(sources: set[str], base_dir: Path = BY_SOURCE_DIR) -> int:
+    """Remove by-source dirs whose source is not in `sources` (incremental mode).
+
+    Called after a full fetch in incremental mode: repos that vanished from the
+    skills.sh ranking keep a stale `scanned.jsonl` that would otherwise leak
+    into `index.jsonl`. Only dirs matching the `owner__repo` layout (exactly one
+    `DIR_SEP`) are considered, so unrelated files stay intact. Returns the
+    number of removed dirs.
+    """
+    removed = 0
+    for d in sorted(base_dir.iterdir(), key=lambda p: p.name):
+        if not (d.is_dir() and d.name.count(DIR_SEP) == 1):
+            continue
+        if dir_to_source(d.name) not in sources:
+            shutil.rmtree(d)
+            removed += 1
+            print(f"  [prune] removed stale {d.name}")
+    return removed
 
 
 def run_fetch(*, max_pages: int = 0, token: str = "") -> tuple[list[Record], dict]:

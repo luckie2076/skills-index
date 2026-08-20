@@ -9,7 +9,7 @@ import time
 from pathlib import Path
 
 from .config import BY_SOURCE_DIR, DATA_DIR, FETCHED_SKILLS, INDEX_JSONL, SCANNED_REPOS
-from .fetch import run_fetch
+from .fetch import prune_stale_repos, run_fetch
 from .index import run_index
 from .scan import scan_repositories
 from .io_utils import read_jsonl, write_jsonl
@@ -77,6 +77,7 @@ def _build_summary(
         f"- Kept (GitHub sources): `{fetch_sum.get('kept_github', 0)}`",
         f"- Dropped (non-GitHub): `{fetch_sum.get('dropped_non_github', 0)}`",
         f"- Source repos: `{fetch_sum.get('source_dirs', 0)}`",
+        f"- Pruned stale repo dirs: `{fetch_sum.get('pruned_stale', 0)}`",
     ]
     if failed:
         lines.append(f"- Skipped pages (errors): `{len(failed)}` {failed}")
@@ -148,9 +149,24 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "update":
         t0 = time.monotonic()
-        clean_workspace()
-        _, fetch_sum = run_fetch(max_pages=args.pages)
+        # Incremental (default): keep the on-disk by-source cache so `scan` can
+        # reuse pushed_at / blob sha fingerprints. A partial fetch (`--pages N`,
+        # smoke tests) or `--force` falls back to the clean full-build path: a
+        # partial fetch would otherwise prune most cached repos and break the
+        # incremental chain, and `--force` promises a from-scratch rebuild.
+        incremental = args.pages == 0 and not args.force
+        if not incremental:
+            clean_workspace()
+        skills, fetch_sum = run_fetch(max_pages=args.pages)
         t_fetch = time.monotonic() - t0
+        if incremental:
+            # Drop by-source dirs whose repo vanished from this fetch so their
+            # stale scanned.jsonl cannot leak into index.jsonl.
+            sources = {str(s.get("source", "")).strip() for s in skills}
+            fetch_sum["pruned_stale"] = prune_stale_repos(sources)
+            print(
+                f"  [prune] removed {fetch_sum['pruned_stale']} stale repo dir(s)"
+            )
         scan_sum = scan_repositories(force=args.force)
         t_scan = time.monotonic() - t_fetch - t0
         _, index_sum = run_index()

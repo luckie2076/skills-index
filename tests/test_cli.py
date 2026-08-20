@@ -52,8 +52,8 @@ def test_update_runs_pipeline_in_order(monkeypatch: pytest.MonkeyPatch) -> None:
     assert calls[2][1] == {"force": True}
 
 
-def test_update_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Without flags, update uses max_pages=0 (all) and force=False."""
+def test_update_defaults_is_incremental(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Without flags, update keeps the cache: no clean, fetch all, prune stale."""
     seen: dict[str, dict] = {}
 
     def fake_clean() -> None:
@@ -61,7 +61,7 @@ def test_update_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
 
     def fake_fetch(*, max_pages: int = 0, token: str = "") -> tuple[list, dict]:
         seen["fetch"] = {"max_pages": max_pages}
-        return [], {}
+        return [{"source": "a/b"}], {}
 
     def fake_scan(*, force: bool = False, base_dir=None) -> dict:
         seen["scan"] = {"force": force}
@@ -70,15 +70,22 @@ def test_update_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     def fake_index(*, base_dir=None) -> tuple[list, dict]:
         return [], {}
 
+    def fake_prune(sources, base_dir=None) -> int:
+        seen["prune"] = {"sources": sources}
+        return len(sources)
+
     monkeypatch.setattr(cli, "clean_workspace", fake_clean)
     monkeypatch.setattr(cli, "run_fetch", fake_fetch)
     monkeypatch.setattr(cli, "scan_repositories", fake_scan)
     monkeypatch.setattr(cli, "run_index", fake_index)
+    monkeypatch.setattr(cli, "prune_stale_repos", fake_prune)
 
     assert cli.main(["update"]) == 0
+    # Incremental path: cache is preserved (no clean), stale dirs are pruned.
+    assert "clean" not in seen
     assert seen == {
-        "clean": {},
         "fetch": {"max_pages": 0},
+        "prune": {"sources": {"a/b"}},
         "scan": {"force": False},
     }
 
