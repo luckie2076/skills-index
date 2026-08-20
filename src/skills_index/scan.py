@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from .config import (
@@ -80,6 +81,102 @@ def merge_skill_records(  # noqa: E501
     return out
 
 
+# Concurrency for repo-level scanning. GitHub requests are I/O-bound, so a
+# thread pool overlaps network waits across repos. Capped at 8 to stay friendly
+# to GitHub's secondary per-token concurrency limits; the rate-limit-aware
+# backoff in http.py absorbs any 429/403 spikes this may trigger.
+SCAN_WORKERS = 8
+
+
+def _scan_one_repo(
+    dir_name: str,
+    *,
+    force: bool,
+    now: str,
+    base_dir: Path,
+    metas: dict[str, tuple[str, str]],
+    client,
+    counters: dict,
+) -> JSON | None:
+    """Scan a single repo dir. Returns its summary record, or None to skip.
+
+    Pure function of its arguments plus the on-disk cache. Shared mutable
+    state is limited to `counters` (plain ints, GIL-guarded) and the
+    rate-limited http client (thread-safe).
+    """
+    source = dir_to_source(dir_name)
+    repo_dir = base_dir / dir_name
+    meta_path = repo_dir / META_FILE
+
+    if source not in metas:
+        counters["failed"] += 1
+        return None
+    pushed, branch = metas[source]
+
+    prev = read_json(meta_path, default={}) or {}
+    schema_upgrade = prev.get("schemaVersion") != SCHEMA_VERSION
+    up_to_date = (
+        not force
+        and meta_path.exists()
+        and prev.get("pushedAt") == pushed
+        and not schema_upgrade
+    )
+    if up_to_date:
+        counters["skipped"] += 1
+        print(f"  [skip] {source}: pushed_at unchanged ({pushed})")
+        # 已扫描过的仓库仍纳入汇总，从既有产物读取
+        return _summarize_repo(repo_dir, meta_path, source)
+
+    try:
+        blobs = get_skill_blobs(source, branch, client=client)
+    except Exception as exc:
+        print(f"  [skip] {source}: scan failed - {exc}")
+        counters["failed"] += 1
+        return None
+
+    # File-level incremental: only fetch blobs whose sha changed.
+    prev_shas = dict(prev.get("blobShas") or {})
+    fetch = plan_blob_fetches(
+        blobs, prev_shas, force=force, schema_upgrade=schema_upgrade
+    )
+    try:
+        descriptions = get_skill_descriptions(source, fetch, client=client)
+    except Exception as exc:
+        print(f"  [skip] {source}: description fetch failed - {exc}")
+        counters["failed"] += 1
+        return None
+
+    skills = merge_skill_records(
+        blobs,
+        descriptions,
+        read_jsonl(repo_dir / SCANNED_FILE),
+        prev_shas,
+        force=force,
+        schema_upgrade=schema_upgrade,
+    )
+    write_jsonl(repo_dir / SCANNED_FILE, skills)
+
+    meta = {
+        "source": source,
+        "branch": branch,
+        "pushedAt": pushed,
+        "lastScanned": now,
+        "skillCount": len(skills),
+        "truncated": False,
+        "schemaVersion": SCHEMA_VERSION,
+        "blobShas": {path: sha for _name, (path, sha) in blobs.items()},
+    }
+    write_json(meta_path, meta)
+
+    counters["updated"] += 1
+    counters["total_skills"] += len(skills)
+    print(
+        f"  [scan] {source}: {len(skills)} skills "
+        f"({len(fetch)}/{len(blobs)} blobs fetched)"
+    )
+    return _summarize_repo(repo_dir, meta_path, source)
+
+
 def scan_repositories(*, force: bool = False, base_dir: Path = BY_SOURCE_DIR) -> dict:
     """Walk `base_dir`, skip unchanged repos by `pushed_at`, emit per-repo files.
 
@@ -89,7 +186,6 @@ def scan_repositories(*, force: bool = False, base_dir: Path = BY_SOURCE_DIR) ->
     now = datetime.datetime.now(datetime.UTC).isoformat()
     _t0 = time.monotonic()
     _meta_time = 0.0
-    _blob_time = 0.0
 
     subdirs = sorted(
         d.name for d in base_dir.iterdir()
@@ -103,103 +199,46 @@ def scan_repositories(*, force: bool = False, base_dir: Path = BY_SOURCE_DIR) ->
     metas = get_repo_metas(sources, client=client)
     _meta_time += time.monotonic() - _tm
 
-    skipped = 0
-    updated = 0
-    failed = 0
-    total_skills = 0
+    counters = {"skipped": 0, "updated": 0, "failed": 0, "total_skills": 0}
     repos: list[JSON] = []
-    for dir_name in subdirs:
-        source = dir_to_source(dir_name)
-        repo_dir = base_dir / dir_name
-        meta_path = repo_dir / META_FILE
 
-        if source not in metas:
-            failed += 1
-            continue
-        pushed, branch = metas[source]
-
-        prev = read_json(meta_path, default={}) or {}
-        schema_upgrade = prev.get("schemaVersion") != SCHEMA_VERSION
-        up_to_date = (
-            not force
-            and meta_path.exists()
-            and prev.get("pushedAt") == pushed
-            and not schema_upgrade
-        )
-        if up_to_date:
-            skipped += 1
-            print(f"  [skip] {source}: pushed_at unchanged ({pushed})")
-            # 已扫描过的仓库仍纳入汇总，从既有产物读取
-            repos.append(_summarize_repo(repo_dir, meta_path, source))
-            continue
-
-        try:
-            _tb = time.monotonic()
-            blobs = get_skill_blobs(source, branch, client=client)
-        except Exception as exc:
-            print(f"  [skip] {source}: scan failed - {exc}")
-            failed += 1
-            continue
-
-        # File-level incremental: only fetch blobs whose sha changed.
-        prev_shas = dict(prev.get("blobShas") or {})
-        fetch = plan_blob_fetches(
-            blobs, prev_shas, force=force, schema_upgrade=schema_upgrade
-        )
-        try:
-            _tb = time.monotonic()
-            descriptions = get_skill_descriptions(source, fetch, client=client)
-            _blob_time += time.monotonic() - _tb
-        except Exception as exc:
-            print(f"  [skip] {source}: description fetch failed - {exc}")
-            failed += 1
-            continue
-
-        skills = merge_skill_records(
-            blobs,
-            descriptions,
-            read_jsonl(repo_dir / SCANNED_FILE),
-            prev_shas,
-            force=force,
-            schema_upgrade=schema_upgrade,
-        )
-        write_jsonl(repo_dir / SCANNED_FILE, skills)
-
-        meta = {
-            "source": source,
-            "branch": branch,
-            "pushedAt": pushed,
-            "lastScanned": now,
-            "skillCount": len(skills),
-            "truncated": False,
-            "schemaVersion": SCHEMA_VERSION,
-            "blobShas": {path: sha for _name, (path, sha) in blobs.items()},
-        }
-        write_json(meta_path, meta)
-
-        repos.append(_summarize_repo(repo_dir, meta_path, source))
-        updated += 1
-        total_skills += len(skills)
-        print(
-            f"  [scan] {source}: {len(skills)} skills "
-            f"({len(fetch)}/{len(blobs)} blobs fetched)"
-        )
+    # Repo-level scanning is I/O-bound: overlap network waits across repos.
+    with ThreadPoolExecutor(max_workers=SCAN_WORKERS) as ex:
+        futures = [
+            ex.submit(
+                _scan_one_repo,
+                dir_name,
+                force=force,
+                now=now,
+                base_dir=base_dir,
+                metas=metas,
+                client=client,
+                counters=counters,
+            )
+            for dir_name in subdirs
+        ]
+        for fut in futures:
+            res = fut.result()  # propagate unexpected exceptions
+            if res is not None:
+                repos.append(res)
 
     write_jsonl(SCANNED_REPOS, repos)
-    print(f"scan done: skipped {skipped} unchanged, updated {updated}, failed {failed}.")
+    print(
+        f"scan done: skipped {counters['skipped']} unchanged, "
+        f"updated {counters['updated']}, failed {counters['failed']}."
+    )
     print(f"wrote {SCANNED_REPOS.name}: {len(repos)} repos")
     _total = time.monotonic() - _t0
     print(
         f"[timer] scan: total={_total:.1f}s "
-        f"meta={_meta_time:.1f}s blob+desc={_blob_time:.1f}s "
-        f"other={_total - _meta_time - _blob_time:.1f}s"
+        f"meta={_meta_time:.1f}s other={_total - _meta_time:.1f}s"
     )
     summary = {
         "repos_total": len(subdirs),
-        "repos_skipped": skipped,
-        "repos_updated": updated,
-        "repos_failed": failed,
-        "skills_scanned": total_skills,
+        "repos_skipped": counters["skipped"],
+        "repos_updated": counters["updated"],
+        "repos_failed": counters["failed"],
+        "skills_scanned": counters["total_skills"],
     }
     return summary
 
