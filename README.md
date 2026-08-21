@@ -145,6 +145,7 @@ curl -L -o index.jsonl \
 - **极简说明**：把第 1~3 步串成一条命令，本地测试和 CI 统一入口。
 - **对应命令**：`uv run skills-index update`
 - **说明**：默认走**增量**——保留本地 `data/by-source/` 缓存（不清空），fetch 后自动清理不在本次数据中的 stale 仓库目录，随后 `scan` 复用 `pushed_at` / `blobShas` 指纹，只扫描有变化的仓库与 `SKILL.md`。`--force` 强制全量重建（先清空缓存再重扫所有仓库，用于保证一致性）；`--pages N` 只拉取 N 页 skills.sh 数据，专供冒烟测试，同样走全量路径（部分 fetch 会破坏增量缓存链条，故不启用增量）；`--min-stars N` 把 star 数小于 `N` 的仓库排除出索引（见第 2 步）。
+- **线上部署**：CI（`.github/workflows/daily.yml`）在 `main` 与 `test` 分支均用 `--min-stars 100` 运行 `update`，因此发布的 `index.jsonl`（与 `alpha-` 预发布）只收录 star 数 ≥ 100 的仓库。`main` 走全量 fetch，`test` 仅拉 1 页用于冒烟。
 
 ```bash
 # 完整更新（增量：保留缓存，只扫变化的仓库/文件）
@@ -153,8 +154,8 @@ uv run skills-index update
 # 强制全量重建（清空缓存后重扫所有仓库）
 uv run skills-index update --force
 
-# 排除 star 数 < 10 的仓库（过滤同样适用于此前已扫描过的缓存仓库）
-uv run skills-index update --min-stars 10
+# 排除 star 数 < 100 的仓库（过滤同样适用于此前已扫描过的缓存仓库）
+uv run skills-index update --min-stars 100
 
 # 本地快速冒烟测试：只拉 1 页 skills.sh 数据（全量路径，不影响缓存链）
 uv run skills-index update --pages 1
