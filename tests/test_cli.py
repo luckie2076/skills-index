@@ -51,7 +51,6 @@ def test_update_runs_pipeline_in_order(monkeypatch: pytest.MonkeyPatch) -> None:
     assert calls[1][1] == {"max_pages": 1}
     assert calls[2][1] == {
         "force": True,
-        "min_stars": None,
         "max_skill_count": None,
     }
 
@@ -90,7 +89,7 @@ def test_update_defaults_is_incremental(monkeypatch: pytest.MonkeyPatch) -> None
     assert seen == {
         "fetch": {"max_pages": 0},
         "prune": {"sources": {"a/b"}},
-        "scan": {"force": False, "min_stars": None, "max_skill_count": None},
+        "scan": {"force": False, "max_skill_count": None},
     }
 
 
@@ -116,7 +115,8 @@ def test_clean_workspace_wipes_stale_artifacts(
     monkeypatch.setattr(cli, "FETCHED_SKILLS", data / "fetched-skills.jsonl")
     monkeypatch.setattr(cli, "INDEX_JSONL", data / "index.jsonl")
     monkeypatch.setattr(cli, "SCANNED_REPOS", data / "scanned-repos.jsonl")
-    monkeypatch.setattr(cli, "SCANNED_REPOS_BY_STARS", data / "scanned-repos-by-stars.jsonl")
+    by_stars = data / "scanned-repos-by-stars.jsonl"
+    monkeypatch.setattr(cli, "SCANNED_REPOS_BY_STARS", by_stars)
     by_skillcount = data / "scanned-repos-by-skillcount.jsonl"
     monkeypatch.setattr(cli, "SCANNED_REPOS_BY_SKILLCOUNT", by_skillcount)
 

@@ -49,8 +49,8 @@ def patched(monkeypatch, tmp_path):
     scanned_repos = tmp_path / "scanned-repos.jsonl"
     monkeypatch.setattr(scan_mod, "SCANNED_REPOS", scanned_repos)
     by_stars = tmp_path / "scanned-repos-by-stars.jsonl"
-    by_skillcount = tmp_path / "scanned-repos-by-skillcount.jsonl"
     monkeypatch.setattr(scan_mod, "SCANNED_REPOS_BY_STARS", by_stars)
+    by_skillcount = tmp_path / "scanned-repos-by-skillcount.jsonl"
     monkeypatch.setattr(scan_mod, "SCANNED_REPOS_BY_SKILLCOUNT", by_skillcount)
 
     seen_threads: set[int] = set()
@@ -164,33 +164,6 @@ def test_scan_removes_stale_data_for_missing_repo(monkeypatch, tmp_path):
     assert read_jsonl(scanned_repos) == []  # repo not recorded
 
 
-def test_scan_filters_low_star_repos(patched):
-    """Repos below --min-stars are dropped and their stale cache removed.
-
-    owner1..owner3 are up-to-date (cached), owner4..owner6 are stale. With
-    min_stars=150, owner1 (100) and owner2 (200<250) ... owner1 only is below;
-    verify both below-threshold (owner1=100) and an up-to-date cached repo
-    (owner1, owner2) lose their cache so they cannot leak into the index.
-    """
-    base_dir, _seen, scanned_repos = patched
-    # owner1=100, owner2=200, owner3=300, owner4=400, owner5=500, owner6=600
-    summary = scan_repositories(min_stars=250, base_dir=base_dir)
-    # owner1/owner2 below threshold -> filtered; owner3+ kept.
-    assert summary["repos_filtered"] == 2
-    assert summary["repos_updated"] == 3  # owner4/5/6 stale rescanned
-    assert summary["repos_skipped"] == 1  # only owner3 stays up-to-date
-    assert summary["skills_scanned"] == 3
-    # Below-threshold repos' cache dirs are removed entirely.
-    assert not (base_dir / config.source_to_dir("owner1/repo1")).exists()
-    assert not (base_dir / config.source_to_dir("owner2/repo2")).exists()
-    # Kept repos retain their cache.
-    assert (base_dir / config.source_to_dir("owner3/repo3")).exists()
-    # Filtered repos are absent from the per-repo summary.
-    repos = read_jsonl(scanned_repos)
-    kept = {r["source"] for r in repos}
-    assert kept == {"owner3/repo3", "owner4/repo4", "owner5/repo5", "owner6/repo6"}
-
-
 def test_is_missing_repo_detects_404_in_cause_chain():
     import httpx
 
@@ -263,7 +236,6 @@ def test_scan_filters_high_skillcount_repos(monkeypatch, tmp_path):
 
     summary = scan_repositories(base_dir=base_dir)
     assert summary["repos_filtered"] == 2
-    assert summary["repos_filtered_low_star"] == 0
     assert summary["repos_filtered_high_skill"] == 2
     assert summary["repos_skipped"] == 2   # owner2, owner3
     assert summary["repos_updated"] == 2   # owner5, owner6

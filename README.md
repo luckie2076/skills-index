@@ -104,8 +104,7 @@ curl -L -o index.jsonl \
 
 - **极简说明**：按 `pushed_at` 增量扫描各 GitHub 仓库，找出其中真正的 `SKILL.md` 技能定义（跳过未变更的仓库）。增量粒度是**文件级 blob sha**：`pushed_at` 变化的仓库，下载其**代码压缩包（codeload tarball，不计入 REST API 速率配额）**，本地解压遍历所有 `SKILL.md`，用 git 相同算法在本地计算每个文件的 blob sha（与 GitHub 的 blob sha 一致），只对 sha 相比上次发生变化的 `SKILL.md` 重新解析 YAML frontmatter 提取 `description`，未变化的技能直接复用本地缓存；从仓库中消失的技能会被自动移除。每个技能只记录仓库内相对路径 `path`，完整 GitHub 目录 URL 由调用方用 `source` + `path` 拼接。**仓库本身已不存在时（GitHub 返回 404，如已删除/改名/转为私有）也不会记录该仓库**：会删除其残留的旧扫描数据，该仓库及其技能随之从后续索引中移除，不再出现。仓库级信息会记录其 **star 数**（来自同一仓库元数据请求的 `stargazers_count`，随 `pushed_at` 一起获取，不增加额外请求）。
 - **对应命令**：`uv run skills-index scan`（加 `--force` 可强制全量重扫；扫描产物格式升级时会自动触发一次性全量重扫）
-- **按 star 数过滤**：第一步 `fetch` 全量获取，不过滤；第二步 `scan` 默认就会过滤掉 star 数小于 `10`（`config.MIN_STARS`）的仓库（也可加 `--min-stars N` 自定义阈值）。被过滤的仓库会**删除其残留的旧扫描数据**（与该仓库 404 时同样处理），因此其技能不会进入扫描产物，第三步 `index` 自然不会合并它们——即便该仓库此前已扫描过、走的是「未变更」分支也会重新被过滤。star 数取自同一元数据请求的 `stargazers_count`，不增加额外请求。
-- **按 skillCount 过滤**：第二步 `scan` 还会过滤掉安装 `SKILL.md` 技能数（`skillCount`）大于 `500`（`config.MAX_SKILL_COUNT`）的仓库（如聚合型 / awesome-list 类仓库会捆绑过量技能，稀释索引质量；也可加 `--max-skill-count N` 自定义上限，设为 `0` 关闭）。被过滤的仓库同样会删除其残留旧扫描数据，其技能不会进入扫描产物。无论仓库是首次扫描还是走「未变更」缓存分支，都会被该上限过滤。
+- **按 skillCount 过滤**：第二步 `scan` 会过滤掉安装 `SKILL.md` 技能数（`skillCount`）大于 `500`（`config.MAX_SKILL_COUNT`）的仓库（如聚合型 / awesome-list 类仓库会捆绑过量技能，稀释索引质量；可加 `--max-skill-count N` 自定义上限，设为 `0` 关闭）。被过滤的仓库会**删除其残留的旧扫描数据**（与该仓库 404 时同样处理），因此其技能不会进入扫描产物，第三步 `index` 自然不会合并它们——即便该仓库此前已扫描过、走的是「未变更」分支也会重新被过滤。skillCount 取自同一元数据请求的 `repositoryTopics`/清单，不增加额外请求。
 - **产物形状**：在每个仓库目录下输出 `scanned.jsonl`（扫描发现的所有技能，含 `path` / `description`）与 `meta.json`（仓库元信息，含 `branch` / `pushedAt` / `stars` / `blobShas` 文件级增量指纹与 `schemaVersion`）。汇总产物为三份 `scanned-repos*.jsonl`，每份每仓库一行（含 `source` / `pushedAt` / `stars` / `skillCount` / `skills`）：
   - `scanned-repos.jsonl`：**原始扫描顺序**（fetch 拉取到的顺序，即 `fetched-skills.jsonl` 中每个 source 首次出现的顺序，未经排序）。
   - `scanned-repos-by-stars.jsonl`：按 **star 数降序**。
@@ -150,8 +149,8 @@ curl -L -o index.jsonl \
 
 - **极简说明**：把第 1~3 步串成一条命令，本地测试和 CI 统一入口。
 - **对应命令**：`uv run skills-index update`
-- **说明**：默认走**增量**——保留本地 `data/by-source/` 缓存（不清空），fetch 后自动清理不在本次数据中的 stale 仓库目录，随后 `scan` 复用 `pushed_at` / `blobShas` 指纹，只扫描有变化的仓库与 `SKILL.md`。`--force` 强制全量重建（先清空缓存再重扫所有仓库，用于保证一致性）；`--pages N` 只拉取 N 页 skills.sh 数据，专供冒烟测试，同样走全量路径（部分 fetch 会破坏增量缓存链条，故不启用增量）；默认按 `MIN_STARS=10` 过滤 star 数小于 10 的仓库，按 `MAX_SKILL_COUNT=500` 过滤 `skillCount` 大于 500 的仓库，可用 `--min-stars N` / `--max-skill-count N` 自定义阈值（见第 2 步）。
-- **线上部署**：CI（`.github/workflows/daily.yml`）在 `main` 与 `test` 分支均用 `--min-stars 10` 运行 `update`，因此发布的 `index.jsonl`（与 `alpha-` 预发布）只收录 star 数 ≥ 10 且 `skillCount` ≤ 500 的仓库。`main` 走全量 fetch，`test` 仅拉 1 页用于冒烟。
+- **说明**：默认走**增量**——保留本地 `data/by-source/` 缓存（不清空），fetch 后自动清理不在本次数据中的 stale 仓库目录，随后 `scan` 复用 `pushed_at` / `blobShas` 指纹，只扫描有变化的仓库与 `SKILL.md`。`--force` 强制全量重建（先清空缓存再重扫所有仓库，用于保证一致性）；`--pages N` 只拉取 N 页 skills.sh 数据，专供冒烟测试，同样走全量路径（部分 fetch 会破坏增量缓存链条，故不启用增量）；默认按 `MAX_SKILL_COUNT=500` 过滤 `skillCount` 大于 500 的仓库，可用 `--max-skill-count N` 自定义上限（见第 2 步）。
+- **线上部署**：CI（`.github/workflows/daily.yml`）在 `main` 与 `test` 分支运行 `update`，发布的 `index.jsonl`（与 `alpha-` 预发布）只收录 `skillCount` ≤ 500 的仓库。`main` 走全量 fetch，`test` 仅拉 1 页用于冒烟。
 
 ```bash
 # 完整更新（增量：保留缓存，只扫变化的仓库/文件）
@@ -159,9 +158,6 @@ uv run skills-index update
 
 # 强制全量重建（清空缓存后重扫所有仓库）
 uv run skills-index update --force
-
-# 排除 star 数 < 10 的仓库（过滤同样适用于此前已扫描过的缓存仓库）
-uv run skills-index update --min-stars 10
 
 # 排除 skillCount > 500 的仓库（默认上限；设为 0 关闭）
 uv run skills-index update --max-skill-count 500

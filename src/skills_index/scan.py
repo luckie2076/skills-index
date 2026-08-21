@@ -16,7 +16,6 @@ from .config import (
     JSON,
     MAX_SKILL_COUNT,
     META_FILE,
-    MIN_STARS,
     SCANNED_FILE,
     SCANNED_REPOS,
     SCANNED_REPOS_BY_SKILLCOUNT,
@@ -105,7 +104,6 @@ def _scan_one_repo(
     missing: set[str],
     client: httpx.Client,
     counters: dict[str, int],
-    min_stars: int | None = None,
     max_skill_count: int | None = None,
 ) -> JSON | None:
     """Scan a single repo dir. Returns its summary record, or None to skip.
@@ -114,7 +112,6 @@ def _scan_one_repo(
     state is limited to `counters` (plain ints, GIL-guarded) and the
     rate-limited http client (thread-safe).
     """
-    effective_min = MIN_STARS if min_stars is None else min_stars
     effective_max = MAX_SKILL_COUNT if max_skill_count is None else max_skill_count
     source = dir_to_source(dir_name)
     repo_dir = base_dir / dir_name
@@ -133,17 +130,6 @@ def _scan_one_repo(
         return None
     pushed, branch, stars = metas[source]
 
-    # Drop repos below the star threshold so they never enter the index. Their
-    # stale scan data is removed, exactly like gone repos, otherwise their cached
-    # scanned.jsonl would leak into index.jsonl.
-    if effective_min > 0 and (stars or 0) < effective_min:
-        counters["filtered"] += 1
-        counters["filtered_low_star"] += 1
-        print(f"  [low-star] {source}: {stars} stars < {effective_min}; removing stale data")
-        if repo_dir.exists():
-            shutil.rmtree(repo_dir)
-        return None
-
     prev = read_json(meta_path, default={}) or {}
     schema_upgrade = prev.get("schemaVersion") != SCHEMA_VERSION
     up_to_date = (
@@ -153,18 +139,9 @@ def _scan_one_repo(
         and not schema_upgrade
     )
     if up_to_date:
-        # 已扫描过的仓库：仍受 star 阈值 / skillCount 上限约束，避免缓存绕过过滤。
+        # 已扫描过的仓库：仍受 skillCount 上限约束，避免聚合型仓库绕过上限。
         cached = read_json(meta_path, default={}) or {}
-        cached_stars = cached.get("stars") or 0
         cached_skill_count = cached.get("skillCount") or 0
-        if effective_min > 0 and cached_stars < effective_min:
-            counters["filtered"] += 1
-            counters["filtered_low_star"] += 1
-            print(f"  [low-star] {source}: cached {cached_stars} < {effective_min}; removing cache")
-            if repo_dir.exists():
-                shutil.rmtree(repo_dir)
-            return None
-        # 缓存命中但 skillCount 已超过上限：同样过滤掉，避免聚合型仓库绕过上限。
         if effective_max > 0 and cached_skill_count > effective_max:
             counters["filtered"] += 1
             counters["filtered_high_skill"] += 1
@@ -241,16 +218,14 @@ def _scan_one_repo(
 def scan_repositories(
     *,
     force: bool = False,
-    min_stars: int | None = None,
     max_skill_count: int | None = None,
     base_dir: Path = BY_SOURCE_DIR,
 ) -> dict[str, JSON]:
     """Walk `base_dir`, skip unchanged repos by `pushed_at`, emit per-repo files.
 
-    `min_stars` filters out repos with fewer stars; `max_skill_count` filters
-    out repos with more than that many skills. When either is `None` (the
-    default), `config.MIN_STARS` / `config.MAX_SKILL_COUNT` is used, so both
-    filters apply in every invocation unless explicitly overridden.
+    `max_skill_count` filters out repos with more than that many skills. When
+    it is `None` (the default), `config.MAX_SKILL_COUNT` is used, so the filter
+    applies in every invocation unless explicitly overridden.
 
     Returns a summary dict with counts for the run report.
     """
@@ -258,7 +233,6 @@ def scan_repositories(
     now = datetime.datetime.now(datetime.UTC).isoformat()
     _t0 = time.monotonic()
     _meta_time = 0.0
-    effective_min = MIN_STARS if min_stars is None else min_stars
     effective_max = MAX_SKILL_COUNT if max_skill_count is None else max_skill_count
 
     subdirs = sorted(
@@ -268,7 +242,7 @@ def scan_repositories(
     print(
         f"scanning by-source: {len(subdirs)} GitHub repo dirs"
         + (" (force)" if force else "")
-        + f" (min-stars {effective_min}, max-skill-count {effective_max})"
+        + f" (max-skill-count {effective_max})"
     )
 
     # Fetch all repo metadata concurrently (network-bound) before the loop.
@@ -283,7 +257,6 @@ def scan_repositories(
         "failed": 0,
         "gone": 0,
         "filtered": 0,
-        "filtered_low_star": 0,
         "filtered_high_skill": 0,
         "total_skills": 0,
     }
@@ -302,7 +275,6 @@ def scan_repositories(
                 missing=missing,
                 client=client,
                 counters=counters,
-                min_stars=effective_min,
                 max_skill_count=effective_max,
             )
             for dir_name in subdirs
@@ -337,7 +309,7 @@ def scan_repositories(
         repos, key=lambda r: r.get("skillCount") or 0, reverse=True
     )
 
-    # scanned-repos.jsonl is the raw scan order; the other two are sorted views.
+    # scanned-repos.jsonl is the raw scan order; the others are sorted views.
     write_jsonl(SCANNED_REPOS, repos)
     write_jsonl(SCANNED_REPOS_BY_STARS, repos_by_stars)
     write_jsonl(SCANNED_REPOS_BY_SKILLCOUNT, repos_by_skillcount)
@@ -345,8 +317,7 @@ def scan_repositories(
         f"scan done: skipped {counters['skipped']} unchanged, "
         f"updated {counters['updated']}, failed {counters['failed']}, "
         f"gone {counters['gone']}, filtered {counters['filtered']} "
-        f"(low-star {counters['filtered_low_star']}, "
-        f"high-skill {counters['filtered_high_skill']})."
+        f"(high-skill {counters['filtered_high_skill']})."
     )
     print(
         f"wrote {len(repos)} repos -> "
@@ -366,7 +337,6 @@ def scan_repositories(
         "repos_failed": counters["failed"],
         "repos_gone": counters["gone"],
         "repos_filtered": counters["filtered"],
-        "repos_filtered_low_star": counters["filtered_low_star"],
         "repos_filtered_high_skill": counters["filtered_high_skill"],
         "skills_scanned": counters["total_skills"],
     }

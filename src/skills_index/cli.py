@@ -14,7 +14,6 @@ from .config import (
     INDEX_JSONL,
     JSON,
     MAX_SKILL_COUNT,
-    MIN_STARS,
     SCANNED_REPOS,
     SCANNED_REPOS_BY_SKILLCOUNT,
     SCANNED_REPOS_BY_STARS,
@@ -41,13 +40,6 @@ def build_parser() -> argparse.ArgumentParser:
         "--force", action="store_true", help="ignore cached pushed_at and rescan all"
     )
     scan_p.add_argument(
-        "--min-stars",
-        type=int,
-        default=None,
-        help="skip repos with fewer than this many stars "
-             f"(default: config.MIN_STARS={MIN_STARS})",
-    )
-    scan_p.add_argument(
         "--max-skill-count",
         type=int,
         default=None,
@@ -68,13 +60,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     update_p.add_argument(
         "--force", action="store_true", help="force a full rescan in scan"
-    )
-    update_p.add_argument(
-        "--min-stars",
-        type=int,
-        default=None,
-        help="skip repos with fewer than this many stars "
-             f"(default: config.MIN_STARS={MIN_STARS})",
     )
     update_p.add_argument(
         "--max-skill-count",
@@ -119,7 +104,6 @@ def _build_summary(
     ]
     if failed:
         lines.append(f"- Skipped pages (errors): `{len(failed)}` {failed}")
-    low_star = scan_sum.get('repos_filtered_low_star', 0)
     high_skill = scan_sum.get('repos_filtered_high_skill', 0)
     lines += [
         "",
@@ -129,7 +113,6 @@ def _build_summary(
         f"- Updated (incremental): `{scan_sum.get('repos_updated', 0)}`",
         f"- Failed: `{scan_sum.get('repos_failed', 0)}`",
         f"- Removed (repo not found): `{scan_sum.get('repos_gone', 0)}`",
-        f"- Filtered (low-star < {MIN_STARS}): `{low_star}`",
         f"- Filtered (high-skill > {MAX_SKILL_COUNT}): `{high_skill}`",
         f"- Skills scanned: `{scan_sum.get('skills_scanned', 0)}`",
         "",
@@ -194,7 +177,6 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "scan":
         scan_repositories(
             force=args.force,
-            min_stars=args.min_stars,
             max_skill_count=args.max_skill_count,
         )
         return 0
@@ -225,7 +207,6 @@ def main(argv: list[str] | None = None) -> int:
             )
         scan_sum = scan_repositories(
             force=args.force,
-            min_stars=args.min_stars,
             max_skill_count=args.max_skill_count,
         )
         t_scan = time.monotonic() - t_fetch - t0
