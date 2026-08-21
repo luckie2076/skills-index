@@ -55,7 +55,7 @@ def test_update_pages_takes_clean_path(monkeypatch: pytest.MonkeyPatch) -> None:
         seen.append(f"fetch:{max_pages}")
         return [], {}
 
-    def fake_scan(*, force: bool = False, base_dir=None) -> dict:
+    def fake_scan(*, force: bool = False, base_dir=None, **kwargs) -> dict:
         seen.append("scan")
         return {}
 
@@ -87,7 +87,7 @@ def test_update_force_takes_clean_path(monkeypatch: pytest.MonkeyPatch) -> None:
         seen.append("fetch")
         return [], {}
 
-    def fake_scan(*, force: bool = False, base_dir=None) -> dict:
+    def fake_scan(*, force: bool = False, base_dir=None, **kwargs) -> dict:
         seen.append(f"scan:{force}")
         return {}
 

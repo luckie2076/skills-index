@@ -20,7 +20,6 @@ from .config import (
 
 # META_FILE holds GitHub-sourced metadata (branch / pushedAt / stars / skillCount).
 from .github import (
-    get_repo_meta,
     get_repo_metas,
     get_skill_blobs,
     get_skill_descriptions,
@@ -99,6 +98,7 @@ def _scan_one_repo(
     missing: set[str],
     client,
     counters: dict,
+    min_stars: int = 0,
 ) -> JSON | None:
     """Scan a single repo dir. Returns its summary record, or None to skip.
 
@@ -122,6 +122,16 @@ def _scan_one_repo(
             counters["failed"] += 1
         return None
     pushed, branch, stars = metas[source]
+
+    # Drop repos below the star threshold (e.g. --min-stars 10) so they never
+    # enter the index. Their stale scan data is removed, exactly like gone repos,
+    # otherwise their cached scanned.jsonl would leak into index.jsonl.
+    if min_stars > 0 and (stars or 0) < min_stars:
+        counters["filtered"] += 1
+        print(f"  [low-star] {source}: {stars} stars < {min_stars}; removing stale data")
+        if repo_dir.exists():
+            shutil.rmtree(repo_dir)
+        return None
 
     prev = read_json(meta_path, default={}) or {}
     schema_upgrade = prev.get("schemaVersion") != SCHEMA_VERSION
@@ -188,7 +198,12 @@ def _scan_one_repo(
     return _summarize_repo(repo_dir, meta_path, source)
 
 
-def scan_repositories(*, force: bool = False, base_dir: Path = BY_SOURCE_DIR) -> dict:
+def scan_repositories(
+    *,
+    force: bool = False,
+    min_stars: int = 0,
+    base_dir: Path = BY_SOURCE_DIR,
+) -> dict:
     """Walk `base_dir`, skip unchanged repos by `pushed_at`, emit per-repo files.
 
     Returns a summary dict with counts for the run report.
@@ -202,7 +217,11 @@ def scan_repositories(*, force: bool = False, base_dir: Path = BY_SOURCE_DIR) ->
         d.name for d in base_dir.iterdir()
         if d.is_dir() and d.name.count("__") == 1
     )
-    print(f"scanning by-source: {len(subdirs)} GitHub repo dirs" + (" (force)" if force else ""))
+    print(
+        f"scanning by-source: {len(subdirs)} GitHub repo dirs"
+        + (" (force)" if force else "")
+        + (f" (min-stars {min_stars})" if min_stars else "")
+    )
 
     # Fetch all repo metadata concurrently (network-bound) before the loop.
     _tm = time.monotonic()
@@ -215,6 +234,7 @@ def scan_repositories(*, force: bool = False, base_dir: Path = BY_SOURCE_DIR) ->
         "updated": 0,
         "failed": 0,
         "gone": 0,
+        "filtered": 0,
         "total_skills": 0,
     }
     repos: list[JSON] = []
@@ -232,6 +252,7 @@ def scan_repositories(*, force: bool = False, base_dir: Path = BY_SOURCE_DIR) ->
                 missing=missing,
                 client=client,
                 counters=counters,
+                min_stars=min_stars,
             )
             for dir_name in subdirs
         ]
@@ -246,7 +267,7 @@ def scan_repositories(*, force: bool = False, base_dir: Path = BY_SOURCE_DIR) ->
     print(
         f"scan done: skipped {counters['skipped']} unchanged, "
         f"updated {counters['updated']}, failed {counters['failed']}, "
-        f"gone {counters['gone']}."
+        f"gone {counters['gone']}, filtered {counters['filtered']} (low-star)."
     )
     print(f"wrote {SCANNED_REPOS.name}: {len(repos)} repos")
     _total = time.monotonic() - _t0
@@ -260,6 +281,7 @@ def scan_repositories(*, force: bool = False, base_dir: Path = BY_SOURCE_DIR) ->
         "repos_updated": counters["updated"],
         "repos_failed": counters["failed"],
         "repos_gone": counters["gone"],
+        "repos_filtered": counters["filtered"],
         "skills_scanned": counters["total_skills"],
     }
     return summary

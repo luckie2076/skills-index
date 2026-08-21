@@ -32,8 +32,8 @@ def test_update_runs_pipeline_in_order(monkeypatch: pytest.MonkeyPatch) -> None:
         calls.append(("fetch", {"max_pages": max_pages}))
         return [], {}
 
-    def fake_scan(*, force: bool = False, base_dir=None) -> dict:
-        calls.append(("scan", {"force": force}))
+    def fake_scan(*, force: bool = False, base_dir=None, **kwargs) -> dict:
+        calls.append(("scan", {"force": force, **kwargs}))
         return {}
 
     def fake_index(*, base_dir=None) -> tuple[list, dict]:
@@ -49,7 +49,7 @@ def test_update_runs_pipeline_in_order(monkeypatch: pytest.MonkeyPatch) -> None:
 
     assert [c[0] for c in calls] == ["clean", "fetch", "scan", "index"]
     assert calls[1][1] == {"max_pages": 1}
-    assert calls[2][1] == {"force": True}
+    assert calls[2][1] == {"force": True, "min_stars": 0}
 
 
 def test_update_defaults_is_incremental(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -63,8 +63,8 @@ def test_update_defaults_is_incremental(monkeypatch: pytest.MonkeyPatch) -> None
         seen["fetch"] = {"max_pages": max_pages}
         return [{"source": "a/b"}], {}
 
-    def fake_scan(*, force: bool = False, base_dir=None) -> dict:
-        seen["scan"] = {"force": force}
+    def fake_scan(*, force: bool = False, base_dir=None, **kwargs) -> dict:
+        seen["scan"] = {"force": force, **kwargs}
         return {}
 
     def fake_index(*, base_dir=None) -> tuple[list, dict]:
@@ -86,7 +86,7 @@ def test_update_defaults_is_incremental(monkeypatch: pytest.MonkeyPatch) -> None
     assert seen == {
         "fetch": {"max_pages": 0},
         "prune": {"sources": {"a/b"}},
-        "scan": {"force": False},
+        "scan": {"force": False, "min_stars": 0},
     }
 
 

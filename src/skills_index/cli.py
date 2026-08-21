@@ -6,13 +6,11 @@ import argparse
 import shutil
 import sys
 import time
-from pathlib import Path
 
 from .config import BY_SOURCE_DIR, DATA_DIR, FETCHED_SKILLS, INDEX_JSONL, SCANNED_REPOS
 from .fetch import prune_stale_repos, run_fetch
 from .index import run_index
 from .scan import scan_repositories
-from .io_utils import read_jsonl, write_jsonl
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -31,6 +29,12 @@ def build_parser() -> argparse.ArgumentParser:
     scan_p.add_argument(
         "--force", action="store_true", help="ignore cached pushed_at and rescan all"
     )
+    scan_p.add_argument(
+        "--min-stars",
+        type=int,
+        default=0,
+        help="skip repos with fewer than this many stars (0 = no limit)",
+    )
 
     sub.add_parser(
         "index", help="merge fetched + scanned data into data/index.jsonl"
@@ -45,6 +49,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     update_p.add_argument(
         "--force", action="store_true", help="force a full rescan in scan"
+    )
+    update_p.add_argument(
+        "--min-stars",
+        type=int,
+        default=0,
+        help="skip repos with fewer than this many stars (0 = no limit)",
     )
 
     return p
@@ -89,6 +99,7 @@ def _build_summary(
         f"- Updated (incremental): `{scan_sum.get('repos_updated', 0)}`",
         f"- Failed: `{scan_sum.get('repos_failed', 0)}`",
         f"- Removed (repo not found): `{scan_sum.get('repos_gone', 0)}`",
+        f"- Filtered (low stars): `{scan_sum.get('repos_filtered', 0)}`",
         f"- Skills scanned: `{scan_sum.get('skills_scanned', 0)}`",
         "",
         "### Index (merged)",
@@ -142,7 +153,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.command == "scan":
-        scan_repositories(force=args.force)
+        scan_repositories(force=args.force, min_stars=args.min_stars)
         return 0
 
     if args.command == "index":
@@ -169,7 +180,7 @@ def main(argv: list[str] | None = None) -> int:
             print(
                 f"  [prune] removed {fetch_sum['pruned_stale']} stale repo dir(s)"
             )
-        scan_sum = scan_repositories(force=args.force)
+        scan_sum = scan_repositories(force=args.force, min_stars=args.min_stars)
         t_scan = time.monotonic() - t_fetch - t0
         _, index_sum = run_index()
         t_index = time.monotonic() - t_scan - t_fetch - t0
