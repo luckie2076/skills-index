@@ -13,7 +13,10 @@ from .config import (
     FETCHED_SKILLS,
     INDEX_JSONL,
     JSON,
+    MIN_STARS,
     SCANNED_REPOS,
+    SCANNED_REPOS_BY_SKILLCOUNT,
+    SCANNED_REPOS_BY_STARS,
 )
 from .fetch import prune_stale_repos, run_fetch
 from .index import run_index
@@ -39,8 +42,9 @@ def build_parser() -> argparse.ArgumentParser:
     scan_p.add_argument(
         "--min-stars",
         type=int,
-        default=0,
-        help="skip repos with fewer than this many stars (0 = no limit)",
+        default=None,
+        help="skip repos with fewer than this many stars "
+             f"(default: config.MIN_STARS={MIN_STARS})",
     )
 
     sub.add_parser(
@@ -60,8 +64,9 @@ def build_parser() -> argparse.ArgumentParser:
     update_p.add_argument(
         "--min-stars",
         type=int,
-        default=0,
-        help="skip repos with fewer than this many stars (0 = no limit)",
+        default=None,
+        help="skip repos with fewer than this many stars "
+             f"(default: config.MIN_STARS={MIN_STARS})",
     )
 
     return p
@@ -121,7 +126,9 @@ def _build_summary(
         "- `data.tar.gz` — full `data/` tree",
         "- `index.jsonl` — merged skills index",
         "- `fetched-skills.jsonl` — raw skills.sh data",
-        "- `scanned-repos.jsonl` — per-repo scan summary",
+        "- `scanned-repos.jsonl` — per-repo scan summary (scan order)",
+        "- `scanned-repos-by-stars.jsonl` — per-repo scan summary (sorted by stars)",
+        "- `scanned-repos-by-skillcount.jsonl` — per-repo scan summary (sorted by skillCount)",
     ]
     return "\n".join(lines) + "\n"
 
@@ -136,7 +143,13 @@ def clean_workspace() -> None:
     summaries and every per-source intermediate file, but keep the directory
     tree so fresh runs reconstruct it.
     """
-    for root_file in (FETCHED_SKILLS, INDEX_JSONL, SCANNED_REPOS):
+    for root_file in (
+        FETCHED_SKILLS,
+        INDEX_JSONL,
+        SCANNED_REPOS,
+        SCANNED_REPOS_BY_STARS,
+        SCANNED_REPOS_BY_SKILLCOUNT,
+    ):
         if root_file.exists():
             root_file.unlink()
             print(f"[clean] removed {root_file.name}")

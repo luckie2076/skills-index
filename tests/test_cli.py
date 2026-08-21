@@ -49,7 +49,7 @@ def test_update_runs_pipeline_in_order(monkeypatch: pytest.MonkeyPatch) -> None:
 
     assert [c[0] for c in calls] == ["clean", "fetch", "scan", "index"]
     assert calls[1][1] == {"max_pages": 1}
-    assert calls[2][1] == {"force": True, "min_stars": 0}
+    assert calls[2][1] == {"force": True, "min_stars": None}
 
 
 def test_update_defaults_is_incremental(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -86,7 +86,7 @@ def test_update_defaults_is_incremental(monkeypatch: pytest.MonkeyPatch) -> None
     assert seen == {
         "fetch": {"max_pages": 0},
         "prune": {"sources": {"a/b"}},
-        "scan": {"force": False, "min_stars": 0},
+        "scan": {"force": False, "min_stars": None},
     }
 
 
@@ -104,18 +104,24 @@ def test_clean_workspace_wipes_stale_artifacts(
     (data / "fetched-skills.jsonl").write_text("{}")
     (data / "index.jsonl").write_text("{}")
     (data / "scanned-repos.jsonl").write_text("{}")
+    (data / "scanned-repos-by-stars.jsonl").write_text("{}")
+    (data / "scanned-repos-by-skillcount.jsonl").write_text("{}")
 
     monkeypatch.setattr(cli, "DATA_DIR", data)
     monkeypatch.setattr(cli, "BY_SOURCE_DIR", by_source)
     monkeypatch.setattr(cli, "FETCHED_SKILLS", data / "fetched-skills.jsonl")
     monkeypatch.setattr(cli, "INDEX_JSONL", data / "index.jsonl")
     monkeypatch.setattr(cli, "SCANNED_REPOS", data / "scanned-repos.jsonl")
+    monkeypatch.setattr(cli, "SCANNED_REPOS_BY_STARS", data / "scanned-repos-by-stars.jsonl")
+    monkeypatch.setattr(cli, "SCANNED_REPOS_BY_SKILLCOUNT", data / "scanned-repos-by-skillcount.jsonl")
 
     cli.clean_workspace()
 
     assert not (data / "fetched-skills.jsonl").exists()
     assert not (data / "index.jsonl").exists()
     assert not (data / "scanned-repos.jsonl").exists()
+    assert not (data / "scanned-repos-by-stars.jsonl").exists()
+    assert not (data / "scanned-repos-by-skillcount.jsonl").exists()
     # The per-source tree is wiped entirely (no stale repo dirs remain).
     assert list(by_source.iterdir()) == []
 

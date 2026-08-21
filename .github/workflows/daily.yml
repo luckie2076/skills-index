@@ -139,6 +139,8 @@ jobs:
             data/index.jsonl
             data/fetched-skills.jsonl
             data/scanned-repos.jsonl
+            data/scanned-repos-by-stars.jsonl
+            data/scanned-repos-by-skillcount.jsonl
             data/run-summary.md
 
       # Prune only on main, so test smoke runs don't consume the retention quota.

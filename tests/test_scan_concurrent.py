@@ -44,10 +44,12 @@ def _make_by_source(base_dir: Path) -> None:
 def patched(monkeypatch, tmp_path):
     base_dir = tmp_path / "by-source"
     _make_by_source(base_dir)
-    # Redirect the global scanned-repos summary into tmp. scan.py binds
-    # SCANNED_REPOS at import time, so patch the attribute on that module.
+    # Redirect the global scanned-repos summaries into tmp. scan.py binds
+    # these names at import time, so patch the attributes on that module.
     scanned_repos = tmp_path / "scanned-repos.jsonl"
     monkeypatch.setattr(scan_mod, "SCANNED_REPOS", scanned_repos)
+    monkeypatch.setattr(scan_mod, "SCANNED_REPOS_BY_STARS", tmp_path / "scanned-repos-by-stars.jsonl")
+    monkeypatch.setattr(scan_mod, "SCANNED_REPOS_BY_SKILLCOUNT", tmp_path / "scanned-repos-by-skillcount.jsonl")
 
     seen_threads: set[int] = set()
     lock = threading.Lock()

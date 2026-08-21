@@ -20,8 +20,16 @@ BY_SOURCE_DIR = DATA_DIR / "by-source"
 FETCHED_SKILLS = DATA_DIR / "fetched-skills.jsonl"
 # 最终合并产物（fetch + scan 结合），由 `index` 命令生成（以 skill 为单位平铺）
 INDEX_JSONL = DATA_DIR / "index.jsonl"
-# scan 的汇总产物（每个仓库一行，含更新时间、技能数量、技能详情）；由 `scan` 命令生成
+# scan 的汇总产物：原始扫描顺序（每个仓库一行，含更新时间、技能数量、技能详情）；由 `scan` 命令生成
 SCANNED_REPOS = DATA_DIR / "scanned-repos.jsonl"
+# 按 star 数降序排列的扫描汇总
+SCANNED_REPOS_BY_STARS = DATA_DIR / "scanned-repos-by-stars.jsonl"
+# 按安装 skills 技能数（skillCount）降序排列的扫描汇总
+SCANNED_REPOS_BY_SKILLCOUNT = DATA_DIR / "scanned-repos-by-skillcount.jsonl"
+
+# 仓库 star 数过滤阈值：scan 与 index 均会丢弃 stars < MIN_STARS 的仓库
+# （小于 100 的仓库不进入扫描汇总，也不进入最终索引）。
+MIN_STARS = 100
 
 # --- External endpoints ---
 SKILLS_API = "https://skills.sh/api/skills/all-time"

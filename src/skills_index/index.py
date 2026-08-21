@@ -56,6 +56,10 @@ def run_index(base_dir: Path = BY_SOURCE_DIR) -> tuple[list[Record], dict[str, J
     Returns ``(index_records, summary)`` where ``summary`` holds counts for the
     run report.
     """
+    # Index only merges skills whose repo was scanned in step 2. Step 2 already
+    # drops repos below the star threshold (config.MIN_STARS) and deletes their
+    # by-source cache, so low-star repos never reach this step. No extra star
+    # filter is needed here.
     fetched = {_key(r): r for r in read_jsonl(FETCHED_SKILLS)}
     summary: dict[str, JSON] = {
         "fetched": 0,
