@@ -62,9 +62,9 @@ jobs:
             # Full refresh on main (and any other branch): fetch all pages.
             echo "pages_arg=" >> "$GITHUB_OUTPUT"
             echo "tag_prefix=data-" >> "$GITHUB_OUTPUT"
-            # Published (main) index excludes repos with fewer than 10 stars so
+            # Published (main) index excludes repos with fewer than 100 stars so
             # low-quality/unmaintained repos stay out of the public `index.jsonl`.
-            echo "min_stars_arg=--min-stars 10" >> "$GITHUB_OUTPUT"
+            echo "min_stars_arg=--min-stars 100" >> "$GITHUB_OUTPUT"
           fi
           # Human-readable, lexicographically sortable UTC timestamp used for
           # the release tag/name (e.g. 20260820T143015Z).
