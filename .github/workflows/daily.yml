@@ -56,8 +56,8 @@ jobs:
             # Smoke test: fetch only 1 page.
             echo "pages_arg=--pages 1" >> "$GITHUB_OUTPUT"
             echo "tag_prefix=alpha-" >> "$GITHUB_OUTPUT"
-            # Smoke tests keep all repos; only the published main index filters.
-            echo "min_stars_arg=" >> "$GITHUB_OUTPUT"
+            # Alpha index also excludes repos with fewer than 100 stars.
+            echo "min_stars_arg=--min-stars 100" >> "$GITHUB_OUTPUT"
           else
             # Full refresh on main (and any other branch): fetch all pages.
             echo "pages_arg=" >> "$GITHUB_OUTPUT"
