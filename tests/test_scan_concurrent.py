@@ -48,8 +48,10 @@ def patched(monkeypatch, tmp_path):
     # these names at import time, so patch the attributes on that module.
     scanned_repos = tmp_path / "scanned-repos.jsonl"
     monkeypatch.setattr(scan_mod, "SCANNED_REPOS", scanned_repos)
-    monkeypatch.setattr(scan_mod, "SCANNED_REPOS_BY_STARS", tmp_path / "scanned-repos-by-stars.jsonl")
-    monkeypatch.setattr(scan_mod, "SCANNED_REPOS_BY_SKILLCOUNT", tmp_path / "scanned-repos-by-skillcount.jsonl")
+    by_stars = tmp_path / "scanned-repos-by-stars.jsonl"
+    by_skillcount = tmp_path / "scanned-repos-by-skillcount.jsonl"
+    monkeypatch.setattr(scan_mod, "SCANNED_REPOS_BY_STARS", by_stars)
+    monkeypatch.setattr(scan_mod, "SCANNED_REPOS_BY_SKILLCOUNT", by_skillcount)
 
     seen_threads: set[int] = set()
     lock = threading.Lock()
@@ -208,3 +210,71 @@ def test_is_missing_repo_detects_404_in_cause_chain():
     err500.__cause__ = inner500
     assert _is_missing_repo(err500) is False
     assert _is_missing_repo(RuntimeError("boom")) is False
+
+
+def test_scan_filters_high_skillcount_repos(monkeypatch, tmp_path):
+    """Repos with skillCount > --max-skill-count are dropped (both the cached
+    up-to-date branch and the freshly scanned branch) and their cache removed.
+
+    owner1 is up-to-date with a cached skillCount=600 (>500) -> filtered via the
+    up-to-date branch. owner4 is stale and, when rescanned, yields 501 skill
+    blobs (>500) -> filtered via the scan branch. owner2/3 (up-to-date) and
+    owner5/6 (stale, 1 skill) are kept.
+    """
+    OWNERS = {
+        f"owner{i}/repo{i}": (f"2024-01-0{i}T00:00:0{i}Z", "main", i * 100)
+        for i in range(1, 7)
+    }
+    base_dir = tmp_path / "by-source"
+    for i, (source, (pushed, _b, _s)) in enumerate(OWNERS.items(), start=1):
+        repo_dir = base_dir / config.source_to_dir(source)
+        repo_dir.mkdir(parents=True, exist_ok=True)
+        # Repos 1-3 stay up-to-date (cached); 4-6 are stale and get rescanned.
+        prev_pushed = pushed if i <= 3 else "1999-01-01T00:00:00Z"
+        cached_skill = 600 if i == 1 else 1  # owner1 cached above the cap
+        (repo_dir / config.META_FILE).write_text(
+            f'{{"pushedAt": "{prev_pushed}", "schemaVersion": {config.SCHEMA_VERSION}, '
+            f'"stars": {i * 100}, "skillCount": {cached_skill}, "blobShas": {{}}}}'
+        )
+        (repo_dir / config.SCANNED_FILE).write_text(
+            '{"path": "skills/a", "description": "cached"}\n'
+        )
+
+    scanned_repos = tmp_path / "scanned-repos.jsonl"
+    monkeypatch.setattr(scan_mod, "SCANNED_REPOS", scanned_repos)
+    monkeypatch.setattr(scan_mod, "SCANNED_REPOS_BY_STARS", tmp_path / "by-stars.jsonl")
+    monkeypatch.setattr(scan_mod, "SCANNED_REPOS_BY_SKILLCOUNT", tmp_path / "by-skill.jsonl")
+
+    def fake_metas(sources, *, client=None, max_workers=8):
+        return {s: OWNERS[s] for s in sources if s in OWNERS}, set()
+
+    def fake_blobs(source, branch, *, client=None):
+        if source == "owner4/repo4":
+            # 501 skill blobs -> exceeds the default cap of 500.
+            return {f"s{i}": (f"skills/s{i}", f"sha-{i}") for i in range(501)}
+        return {"a": ("skills/a", "sha-a")}
+
+    def fake_descs(source, fetch, *, client=None):
+        return {name: f"desc for {name}" for name in fetch}
+
+    monkeypatch.setattr(scan_mod, "get_repo_metas", fake_metas)
+    monkeypatch.setattr(scan_mod, "get_skill_blobs", fake_blobs)
+    monkeypatch.setattr(scan_mod, "get_skill_descriptions", fake_descs)
+
+    summary = scan_repositories(base_dir=base_dir)
+    assert summary["repos_filtered"] == 2
+    assert summary["repos_filtered_low_star"] == 0
+    assert summary["repos_filtered_high_skill"] == 2
+    assert summary["repos_skipped"] == 2   # owner2, owner3
+    assert summary["repos_updated"] == 2   # owner5, owner6
+    assert summary["skills_scanned"] == 2
+    # High-skill repos' cache dirs are removed entirely.
+    assert not (base_dir / config.source_to_dir("owner1/repo1")).exists()
+    assert not (base_dir / config.source_to_dir("owner4/repo4")).exists()
+    # Kept repos retain their cache.
+    assert (base_dir / config.source_to_dir("owner2/repo2")).exists()
+    assert (base_dir / config.source_to_dir("owner5/repo5")).exists()
+    # Filtered repos are absent from the per-repo summary.
+    repos = read_jsonl(scanned_repos)
+    kept = {r["source"] for r in repos}
+    assert kept == {"owner2/repo2", "owner3/repo3", "owner5/repo5", "owner6/repo6"}

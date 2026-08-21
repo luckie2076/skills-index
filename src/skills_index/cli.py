@@ -13,6 +13,7 @@ from .config import (
     FETCHED_SKILLS,
     INDEX_JSONL,
     JSON,
+    MAX_SKILL_COUNT,
     MIN_STARS,
     SCANNED_REPOS,
     SCANNED_REPOS_BY_SKILLCOUNT,
@@ -46,6 +47,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="skip repos with fewer than this many stars "
              f"(default: config.MIN_STARS={MIN_STARS})",
     )
+    scan_p.add_argument(
+        "--max-skill-count",
+        type=int,
+        default=None,
+        help="skip repos with more than this many skills "
+             f"(default: config.MAX_SKILL_COUNT={MAX_SKILL_COUNT})",
+    )
 
     sub.add_parser(
         "index", help="merge fetched + scanned data into data/index.jsonl"
@@ -67,6 +75,13 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="skip repos with fewer than this many stars "
              f"(default: config.MIN_STARS={MIN_STARS})",
+    )
+    update_p.add_argument(
+        "--max-skill-count",
+        type=int,
+        default=None,
+        help="skip repos with more than this many skills "
+             f"(default: config.MAX_SKILL_COUNT={MAX_SKILL_COUNT})",
     )
 
     return p
@@ -104,6 +119,8 @@ def _build_summary(
     ]
     if failed:
         lines.append(f"- Skipped pages (errors): `{len(failed)}` {failed}")
+    low_star = scan_sum.get('repos_filtered_low_star', 0)
+    high_skill = scan_sum.get('repos_filtered_high_skill', 0)
     lines += [
         "",
         "### Scan (GitHub repos)",
@@ -112,7 +129,8 @@ def _build_summary(
         f"- Updated (incremental): `{scan_sum.get('repos_updated', 0)}`",
         f"- Failed: `{scan_sum.get('repos_failed', 0)}`",
         f"- Removed (repo not found): `{scan_sum.get('repos_gone', 0)}`",
-        f"- Filtered (low stars): `{scan_sum.get('repos_filtered', 0)}`",
+        f"- Filtered (low-star < {MIN_STARS}): `{low_star}`",
+        f"- Filtered (high-skill > {MAX_SKILL_COUNT}): `{high_skill}`",
         f"- Skills scanned: `{scan_sum.get('skills_scanned', 0)}`",
         "",
         "### Index (merged)",
@@ -174,7 +192,11 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.command == "scan":
-        scan_repositories(force=args.force, min_stars=args.min_stars)
+        scan_repositories(
+            force=args.force,
+            min_stars=args.min_stars,
+            max_skill_count=args.max_skill_count,
+        )
         return 0
 
     if args.command == "index":
@@ -201,7 +223,11 @@ def main(argv: list[str] | None = None) -> int:
             print(
                 f"  [prune] removed {fetch_sum['pruned_stale']} stale repo dir(s)"
             )
-        scan_sum = scan_repositories(force=args.force, min_stars=args.min_stars)
+        scan_sum = scan_repositories(
+            force=args.force,
+            min_stars=args.min_stars,
+            max_skill_count=args.max_skill_count,
+        )
         t_scan = time.monotonic() - t_fetch - t0
         _, index_sum = run_index()
         t_index = time.monotonic() - t_scan - t_fetch - t0

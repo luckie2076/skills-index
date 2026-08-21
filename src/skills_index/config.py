@@ -28,8 +28,13 @@ SCANNED_REPOS_BY_STARS = DATA_DIR / "scanned-repos-by-stars.jsonl"
 SCANNED_REPOS_BY_SKILLCOUNT = DATA_DIR / "scanned-repos-by-skillcount.jsonl"
 
 # 仓库 star 数过滤阈值：scan 与 index 均会丢弃 stars < MIN_STARS 的仓库
-# （小于 100 的仓库不进入扫描汇总，也不进入最终索引）。
-MIN_STARS = 100
+# （小于 10 的仓库不进入扫描汇总，也不进入最终索引）。
+MIN_STARS = 10
+
+# 仓库 skillCount 过滤上限：scan 与 index 均会丢弃 skillCount > MAX_SKILL_COUNT
+# 的仓库（例如聚合型 / awesome-list 类仓库会捆绑过量技能，稀释索引质量）。
+# 设为 0 可关闭该上限。
+MAX_SKILL_COUNT = 500
 
 # --- External endpoints ---
 SKILLS_API = "https://skills.sh/api/skills/all-time"

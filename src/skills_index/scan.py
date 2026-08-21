@@ -14,6 +14,7 @@ from .config import (
     BY_SOURCE_DIR,
     FETCHED_SKILLS,
     JSON,
+    MAX_SKILL_COUNT,
     META_FILE,
     MIN_STARS,
     SCANNED_FILE,
@@ -105,6 +106,7 @@ def _scan_one_repo(
     client: httpx.Client,
     counters: dict[str, int],
     min_stars: int | None = None,
+    max_skill_count: int | None = None,
 ) -> JSON | None:
     """Scan a single repo dir. Returns its summary record, or None to skip.
 
@@ -113,6 +115,7 @@ def _scan_one_repo(
     rate-limited http client (thread-safe).
     """
     effective_min = MIN_STARS if min_stars is None else min_stars
+    effective_max = MAX_SKILL_COUNT if max_skill_count is None else max_skill_count
     source = dir_to_source(dir_name)
     repo_dir = base_dir / dir_name
     meta_path = repo_dir / META_FILE
@@ -135,6 +138,7 @@ def _scan_one_repo(
     # scanned.jsonl would leak into index.jsonl.
     if effective_min > 0 and (stars or 0) < effective_min:
         counters["filtered"] += 1
+        counters["filtered_low_star"] += 1
         print(f"  [low-star] {source}: {stars} stars < {effective_min}; removing stale data")
         if repo_dir.exists():
             shutil.rmtree(repo_dir)
@@ -149,12 +153,22 @@ def _scan_one_repo(
         and not schema_upgrade
     )
     if up_to_date:
-        # 已扫描过的仓库：仍受 star 阈值约束，避免低星仓库的缓存绕过过滤。
+        # 已扫描过的仓库：仍受 star 阈值 / skillCount 上限约束，避免缓存绕过过滤。
         cached = read_json(meta_path, default={}) or {}
         cached_stars = cached.get("stars") or 0
+        cached_skill_count = cached.get("skillCount") or 0
         if effective_min > 0 and cached_stars < effective_min:
             counters["filtered"] += 1
-            print(f"  [low-star] {source}: cached {cached_stars} stars < {effective_min}; removing stale data")
+            counters["filtered_low_star"] += 1
+            print(f"  [low-star] {source}: cached {cached_stars} < {effective_min}; removing cache")
+            if repo_dir.exists():
+                shutil.rmtree(repo_dir)
+            return None
+        # 缓存命中但 skillCount 已超过上限：同样过滤掉，避免聚合型仓库绕过上限。
+        if effective_max > 0 and cached_skill_count > effective_max:
+            counters["filtered"] += 1
+            counters["filtered_high_skill"] += 1
+            print(f"  [high-skill] {source}: {cached_skill_count} > {effective_max}")
             if repo_dir.exists():
                 shutil.rmtree(repo_dir)
             return None
@@ -205,6 +219,16 @@ def _scan_one_repo(
     }
     write_json(meta_path, meta)
 
+    # Drop repos whose skill count exceeds the cap (e.g. aggregator/awesome-list
+    # repos) so they never enter the index; remove their stale scan data.
+    if effective_max > 0 and len(skills) > effective_max:
+        counters["filtered"] += 1
+        counters["filtered_high_skill"] += 1
+        print(f"  [high-skill] {source}: {len(skills)} > {effective_max}; removing cache")
+        if repo_dir.exists():
+            shutil.rmtree(repo_dir)
+        return None
+
     counters["updated"] += 1
     counters["total_skills"] += len(skills)
     print(
@@ -218,13 +242,15 @@ def scan_repositories(
     *,
     force: bool = False,
     min_stars: int | None = None,
+    max_skill_count: int | None = None,
     base_dir: Path = BY_SOURCE_DIR,
 ) -> dict[str, JSON]:
     """Walk `base_dir`, skip unchanged repos by `pushed_at`, emit per-repo files.
 
-    `min_stars` filters out repos with fewer stars. When `None` (the default),
-    `config.MIN_STARS` is used, so the threshold applies in every invocation
-    unless explicitly overridden via `--min-stars`.
+    `min_stars` filters out repos with fewer stars; `max_skill_count` filters
+    out repos with more than that many skills. When either is `None` (the
+    default), `config.MIN_STARS` / `config.MAX_SKILL_COUNT` is used, so both
+    filters apply in every invocation unless explicitly overridden.
 
     Returns a summary dict with counts for the run report.
     """
@@ -233,6 +259,7 @@ def scan_repositories(
     _t0 = time.monotonic()
     _meta_time = 0.0
     effective_min = MIN_STARS if min_stars is None else min_stars
+    effective_max = MAX_SKILL_COUNT if max_skill_count is None else max_skill_count
 
     subdirs = sorted(
         d.name for d in base_dir.iterdir()
@@ -241,7 +268,7 @@ def scan_repositories(
     print(
         f"scanning by-source: {len(subdirs)} GitHub repo dirs"
         + (" (force)" if force else "")
-        + f" (min-stars {effective_min})"
+        + f" (min-stars {effective_min}, max-skill-count {effective_max})"
     )
 
     # Fetch all repo metadata concurrently (network-bound) before the loop.
@@ -256,6 +283,8 @@ def scan_repositories(
         "failed": 0,
         "gone": 0,
         "filtered": 0,
+        "filtered_low_star": 0,
+        "filtered_high_skill": 0,
         "total_skills": 0,
     }
     scanned: dict[str, JSON] = {}
@@ -274,6 +303,7 @@ def scan_repositories(
                 client=client,
                 counters=counters,
                 min_stars=effective_min,
+                max_skill_count=effective_max,
             )
             for dir_name in subdirs
         ]
@@ -314,7 +344,9 @@ def scan_repositories(
     print(
         f"scan done: skipped {counters['skipped']} unchanged, "
         f"updated {counters['updated']}, failed {counters['failed']}, "
-        f"gone {counters['gone']}, filtered {counters['filtered']} (low-star)."
+        f"gone {counters['gone']}, filtered {counters['filtered']} "
+        f"(low-star {counters['filtered_low_star']}, "
+        f"high-skill {counters['filtered_high_skill']})."
     )
     print(
         f"wrote {len(repos)} repos -> "
@@ -334,6 +366,8 @@ def scan_repositories(
         "repos_failed": counters["failed"],
         "repos_gone": counters["gone"],
         "repos_filtered": counters["filtered"],
+        "repos_filtered_low_star": counters["filtered_low_star"],
+        "repos_filtered_high_skill": counters["filtered_high_skill"],
         "skills_scanned": counters["total_skills"],
     }
     return summary
