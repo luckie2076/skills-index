@@ -210,7 +210,7 @@ def get_repo_metas(
         return {}, set()
     client = client or new_github_client()
 
-    def work(source: str) -> tuple[str, object]:
+    def work(source: str) -> tuple[str, Exception | tuple[str, str, int]]:
         try:
             return source, _repo_info(source, client=client)
         except Exception as exc:  # noqa: BLE001

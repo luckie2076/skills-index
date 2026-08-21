@@ -90,7 +90,9 @@ def test_update_defaults_is_incremental(monkeypatch: pytest.MonkeyPatch) -> None
     }
 
 
-def test_clean_workspace_wipes_stale_artifacts(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_clean_workspace_wipes_stale_artifacts(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     """clean_workspace removes root summaries and the whole per-source tree."""
     data = tmp_path / "data"
     by_source = data / "by-source"

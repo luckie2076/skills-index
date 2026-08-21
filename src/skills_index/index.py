@@ -43,7 +43,7 @@ def _ordered(rec: Record) -> Record:
     return out
 
 
-def run_index(base_dir: Path = BY_SOURCE_DIR) -> tuple[list[Record], dict]:
+def run_index(base_dir: Path = BY_SOURCE_DIR) -> tuple[list[Record], dict[str, JSON]]:
     """Merge the fetch output with every repo's scanned skills into index.jsonl.
 
     - `fetched-skills.jsonl` provides the skills.sh metadata (name / installs / ...).
@@ -57,7 +57,7 @@ def run_index(base_dir: Path = BY_SOURCE_DIR) -> tuple[list[Record], dict]:
     run report.
     """
     fetched = {_key(r): r for r in read_jsonl(FETCHED_SKILLS)}
-    summary: dict = {
+    summary: dict[str, JSON] = {
         "fetched": 0,
         "scanned_merged": 0,
         "orphans": 0,

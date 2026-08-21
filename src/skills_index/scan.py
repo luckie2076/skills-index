@@ -8,6 +8,8 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+import httpx
+
 from .config import (
     BY_SOURCE_DIR,
     JSON,
@@ -96,8 +98,8 @@ def _scan_one_repo(
     base_dir: Path,
     metas: dict[str, tuple[str, str, int]],
     missing: set[str],
-    client,
-    counters: dict,
+    client: httpx.Client,
+    counters: dict[str, int],
     min_stars: int = 0,
 ) -> JSON | None:
     """Scan a single repo dir. Returns its summary record, or None to skip.
@@ -203,7 +205,7 @@ def scan_repositories(
     force: bool = False,
     min_stars: int = 0,
     base_dir: Path = BY_SOURCE_DIR,
-) -> dict:
+) -> dict[str, JSON]:
     """Walk `base_dir`, skip unchanged repos by `pushed_at`, emit per-repo files.
 
     Returns a summary dict with counts for the run report.

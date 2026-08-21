@@ -7,7 +7,14 @@ import shutil
 import sys
 import time
 
-from .config import BY_SOURCE_DIR, DATA_DIR, FETCHED_SKILLS, INDEX_JSONL, SCANNED_REPOS
+from .config import (
+    BY_SOURCE_DIR,
+    DATA_DIR,
+    FETCHED_SKILLS,
+    INDEX_JSONL,
+    JSON,
+    SCANNED_REPOS,
+)
 from .fetch import prune_stale_repos, run_fetch
 from .index import run_index
 from .scan import scan_repositories
@@ -61,9 +68,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _build_summary(
-    fetch_sum: dict,
-    scan_sum: dict,
-    index_sum: dict,
+    fetch_sum: dict[str, JSON],
+    scan_sum: dict[str, JSON],
+    index_sum: dict[str, JSON],
     *,
     total: float,
     fetch: float,
@@ -79,7 +86,8 @@ def _build_summary(
         "## Run summary",
         "",
         f"- **Scope:** {scope_str}",
-        f"- **Total time:** {total:.1f}s (fetch {fetch:.1f}s / scan {scan:.1f}s / index {index:.1f}s)",
+        f"- **Total time:** {total:.1f}s "
+        f"(fetch {fetch:.1f}s / scan {scan:.1f}s / index {index:.1f}s)",
         "",
         "### Fetch (skills.sh)",
         f"- Pages fetched: `{pages_str}`",

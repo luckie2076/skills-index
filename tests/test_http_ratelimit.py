@@ -44,7 +44,10 @@ def test_x_ratelimit_reset_is_honoured(monkeypatch):
     now = 1_000_000.0
     monkeypatch.setattr(time, "time", lambda: now)
     # reset is 30s in the future -> expect 30.0 (capped well under MAX_BACKOFF).
-    resp = _FakeResponse(403, headers={"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": str(now + 30)})
+    resp = _FakeResponse(
+        403,
+        headers={"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": str(now + 30)},
+    )
     assert _rate_limit_sleep(resp) == 30.0
 
 
@@ -53,7 +56,10 @@ def test_reset_in_past_clamped_to_zero(monkeypatch):
 
     now = 1_000_000.0
     monkeypatch.setattr(time, "time", lambda: now)
-    resp = _FakeResponse(403, headers={"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": str(now - 100)})
+    resp = _FakeResponse(
+        403,
+        headers={"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": str(now - 100)},
+    )
     assert _rate_limit_sleep(resp) == 0.0
 
 
@@ -84,7 +90,10 @@ def test_get_json_gives_up_after_retries(monkeypatch):
     monkeypatch.setattr(http_mod.time, "sleep", lambda s: None)
 
     def fake_get(url):
-        return _FakeResponse(403, headers={"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": "9999999999"})
+        return _FakeResponse(
+            403,
+            headers={"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": "9999999999"},
+        )
 
     class _FakeClient:
         def get(self, url):
