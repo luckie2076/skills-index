@@ -11,6 +11,7 @@ from .config import (
     JSON,
     SCANNED_FILE,
     dir_to_source,
+    iter_repo_dirs,
 )
 from .io_utils import read_jsonl, write_jsonl
 
@@ -76,10 +77,7 @@ def run_index(base_dir: Path = BY_SOURCE_DIR) -> tuple[list[Record], dict[str, J
     merged: dict[tuple[str, str], Record] = dict(fetched)
     matched_keys: set[tuple[str, str]] = set()
 
-    subdirs = sorted(
-        d.name for d in base_dir.iterdir()
-        if d.is_dir() and d.name.count("__") == 1
-    )
+    subdirs = iter_repo_dirs(base_dir)
     scanned_count = 0
     orphan_count = 0
     for dir_name in subdirs:

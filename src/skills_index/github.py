@@ -13,7 +13,6 @@ import hashlib
 import io
 import tarfile
 from concurrent.futures import ThreadPoolExecutor
-from functools import cache
 from urllib.parse import quote
 
 import httpx
@@ -25,17 +24,25 @@ from .http import get_json, new_github_client
 CODELOAD = "https://codeload.github.com"
 
 
-# Process-wide cache (valid for a single run only).
-@cache
+# Process-wide cache (valid for a single run only), keyed by source only so the
+# chosen httpx.Client is never pinned in the cache (avoids leaking connections
+# and keeps the key stable regardless of which caller-supplied client is used).
+_repo_info_cache: dict[str, tuple[str, str, int]] = {}
+
+
 def _repo_info(source: str, *, client: httpx.Client | None = None) -> tuple[str, str, int]:
     """Return (pushed_at, default_branch, stars) for `source`, cached for the run."""
+    cached = _repo_info_cache.get(source)
+    if cached is not None:
+        return cached
     owner, repo = _split(source)
-    client = client or new_github_client()
-    data = get_json(client, f"/repos/{owner}/{repo}")
+    c = client or new_github_client()
+    data = get_json(c, f"/repos/{owner}/{repo}")
     pushed = data.get("pushed_at") or data.get("updated_at") or ""
     branch = str(data.get("default_branch", "main"))
     stars = int(data.get("stargazers_count") or 0)
-    return pushed, branch, stars
+    _repo_info_cache[source] = (pushed, branch, stars)
+    return _repo_info_cache[source]
 
 
 def _split(source: str) -> tuple[str, str]:

@@ -44,8 +44,9 @@ META_FILE = "meta.json"
 # Bump when the scan output format changes so stale caches are rebuilt once.
 SCHEMA_VERSION = 3
 
-# Fields kept from the skills.sh payload.
-KEEP_FIELDS: set[str] = {"source", "skillId", "installs", "weeklyInstalls", "url"}
+# Fields kept from the skills.sh payload. No URL is persisted: consumers
+# reconstruct the GitHub directory URL from `source` + `path` (see README).
+KEEP_FIELDS: set[str] = {"source", "skillId", "installs", "weeklyInstalls"}
 
 # A GitHub source is `owner/repo` (contains a slash, is not a full URL).
 GITHUB_SOURCE = re.compile(r"^[^/\s]+/[^/\s]+$")
@@ -63,7 +64,6 @@ class Skill(TypedDict, total=False):
     skillId: str
     installs: int
     weeklyInstalls: list[int]
-    url: str
     path: str
 
 
@@ -75,6 +75,21 @@ def source_to_dir(source: str) -> str:
 def dir_to_source(dir_name: str) -> str:
     """Inverse of :func:`source_to_dir` (only the first separator is split)."""
     return dir_name.replace(DIR_SEP, "/", 1)
+
+
+def iter_repo_dirs(base_dir: Path) -> list[str]:
+    """Return sorted repo dir names under `base_dir` (exactly one ``DIR_SEP``).
+
+    A real GitHub source is ``owner/repo`` (single slash) -> ``owner__repo``
+    (single ``DIR_SEP``). Deeper slashes are not supported and are skipped.
+    """
+    if not base_dir.exists():
+        return []
+    return sorted(
+        d.name
+        for d in base_dir.iterdir()
+        if d.is_dir() and d.name.count(DIR_SEP) == 1
+    )
 
 
 def is_github_source(source: str) -> bool:

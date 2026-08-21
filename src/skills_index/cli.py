@@ -114,7 +114,8 @@ def _build_summary(
         f"- Failed: `{scan_sum.get('repos_failed', 0)}`",
         f"- Removed (repo not found): `{scan_sum.get('repos_gone', 0)}`",
         f"- Filtered (high-skill > {MAX_SKILL_COUNT}): `{high_skill}`",
-        f"- Skills scanned: `{scan_sum.get('skills_scanned', 0)}`",
+        f"- Skills scanned (all valid repos): `{scan_sum.get('skills_scanned', 0)}`",
+        f"- Skills scanned this run (incremental): `{scan_sum.get('skills_scanned_new', 0)}`",
         "",
         "### Index (merged)",
         f"- Fetched skills: `{index_sum.get('fetched', 0)}`",
@@ -186,7 +187,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.command == "update":
-        t0 = time.monotonic()
+        t_start = time.monotonic()
         # Incremental (default): keep the on-disk by-source cache so `scan` can
         # reuse pushed_at / blob sha fingerprints. A partial fetch (`--pages N`,
         # smoke tests) or `--force` falls back to the clean full-build path: a
@@ -196,7 +197,6 @@ def main(argv: list[str] | None = None) -> int:
         if not incremental:
             clean_workspace()
         skills, fetch_sum = run_fetch(max_pages=args.pages)
-        t_fetch = time.monotonic() - t0
         if incremental:
             # Drop by-source dirs whose repo vanished from this fetch so their
             # stale scanned.jsonl cannot leak into index.jsonl.
@@ -205,14 +205,19 @@ def main(argv: list[str] | None = None) -> int:
             print(
                 f"  [prune] removed {fetch_sum['pruned_stale']} stale repo dir(s)"
             )
+        t_after_fetch = time.monotonic()
         scan_sum = scan_repositories(
             force=args.force,
             max_skill_count=args.max_skill_count,
         )
-        t_scan = time.monotonic() - t_fetch - t0
+        t_after_scan = time.monotonic()
         _, index_sum = run_index()
-        t_index = time.monotonic() - t_scan - t_fetch - t0
-        t_total = time.monotonic() - t0
+        t_after_index = time.monotonic()
+
+        t_fetch = t_after_fetch - t_start
+        t_scan = t_after_scan - t_after_fetch
+        t_index = t_after_index - t_after_scan
+        t_total = t_after_index - t_start
         print(
             f"[timer] total={t_total:.1f}s "
             f"fetch={t_fetch:.1f}s scan={t_scan:.1f}s index={t_index:.1f}s"

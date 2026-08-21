@@ -88,7 +88,10 @@ def test_scan_runs_concurrently_and_marks_threads(patched):
     assert summary["repos_skipped"] == 3
     assert summary["repos_updated"] == 3
     assert summary["repos_failed"] == 0
-    assert summary["skills_scanned"] == 3
+    # skills_scanned counts every skill in every valid repo that survived the
+    # scan, including unchanged repos whose cached scanned.jsonl was reused.
+    assert summary["skills_scanned"] == 6
+    assert summary["skills_scanned_new"] == 3
     assert scanned_repos.exists()
 
 
@@ -126,6 +129,7 @@ def test_scan_force_rescans_everything(patched):
     assert summary["repos_skipped"] == 0
     assert summary["repos_updated"] == 6
     assert summary["skills_scanned"] == 6
+    assert summary["skills_scanned_new"] == 6
 
 
 def test_scan_removes_stale_data_for_missing_repo(monkeypatch, tmp_path):
@@ -239,7 +243,10 @@ def test_scan_filters_high_skillcount_repos(monkeypatch, tmp_path):
     assert summary["repos_filtered_high_skill"] == 2
     assert summary["repos_skipped"] == 2   # owner2, owner3
     assert summary["repos_updated"] == 2   # owner5, owner6
-    assert summary["skills_scanned"] == 2
+    # 4 valid repos survive (owner2/3 skipped, owner5/6 updated); the 2
+    # high-skill repos (owner1, owner4) are filtered out and excluded.
+    assert summary["skills_scanned"] == 4
+    assert summary["skills_scanned_new"] == 2
     # High-skill repos' cache dirs are removed entirely.
     assert not (base_dir / config.source_to_dir("owner1/repo1")).exists()
     assert not (base_dir / config.source_to_dir("owner4/repo4")).exists()

@@ -124,8 +124,8 @@ def prune_stale_repos(sources: set[str], base_dir: Path = BY_SOURCE_DIR) -> int:
 def run_fetch(*, max_pages: int = 0, token: str = "") -> tuple[list[Record], dict[str, JSON]]:
     """Fetch skills.sh data, filter GitHub sources, and save.
 
-    Saves only the raw skills.sh fields (source / skillId / name / installs /
-    weeklyInstalls / url). GitHub URLs are discovered later by `scan`, which
+    Saves only the raw skills.sh fields (source / skillId / installs /
+    weeklyInstalls). GitHub URLs are discovered later by `scan`, which
     walks each repo's SKILL.md files — so no URL resolution happens here.
 
     Returns ``(skills, summary)`` where ``summary`` holds counts for the run

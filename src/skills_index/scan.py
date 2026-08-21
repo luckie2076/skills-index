@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime
 import shutil
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -22,6 +23,7 @@ from .config import (
     SCANNED_REPOS_BY_STARS,
     SCHEMA_VERSION,
     dir_to_source,
+    iter_repo_dirs,
 )
 
 # META_FILE holds GitHub-sourced metadata (branch / pushedAt / stars / skillCount).
@@ -104,12 +106,13 @@ def _scan_one_repo(
     missing: set[str],
     client: httpx.Client,
     counters: dict[str, int],
+    counters_lock: threading.Lock,
     max_skill_count: int | None = None,
 ) -> JSON | None:
     """Scan a single repo dir. Returns its summary record, or None to skip.
 
     Pure function of its arguments plus the on-disk cache. Shared mutable
-    state is limited to `counters` (plain ints, GIL-guarded) and the
+    state is limited to `counters` (guarded by `counters_lock`) and the
     rate-limited http client (thread-safe).
     """
     effective_max = MAX_SKILL_COUNT if max_skill_count is None else max_skill_count
@@ -117,16 +120,20 @@ def _scan_one_repo(
     repo_dir = base_dir / dir_name
     meta_path = repo_dir / META_FILE
 
+    def bump(key: str, n: int = 1) -> None:
+        with counters_lock:
+            counters[key] = counters.get(key, 0) + n
+
     if source not in metas:
         if source in missing:
             # Repo is definitively gone (404): drop its stale scan data so it
             # (and its skills) no longer appear in the index.
-            counters["gone"] += 1
+            bump("gone")
             print(f"  [gone] {source}: repo not found (404); removing stale data")
             if repo_dir.exists():
                 shutil.rmtree(repo_dir)
         else:
-            counters["failed"] += 1
+            bump("failed")
         return None
     pushed, branch, stars = metas[source]
 
@@ -143,13 +150,13 @@ def _scan_one_repo(
         cached = read_json(meta_path, default={}) or {}
         cached_skill_count = cached.get("skillCount") or 0
         if effective_max > 0 and cached_skill_count > effective_max:
-            counters["filtered"] += 1
-            counters["filtered_high_skill"] += 1
+            bump("filtered")
+            bump("filtered_high_skill")
             print(f"  [high-skill] {source}: {cached_skill_count} > {effective_max}")
             if repo_dir.exists():
                 shutil.rmtree(repo_dir)
             return None
-        counters["skipped"] += 1
+        bump("skipped")
         print(f"  [skip] {source}: pushed_at unchanged ({pushed})")
         # 已扫描过的仓库仍纳入汇总，从既有产物读取
         return _summarize_repo(repo_dir, meta_path, source)
@@ -158,7 +165,7 @@ def _scan_one_repo(
         blobs = get_skill_blobs(source, branch, client=client)
     except Exception as exc:
         print(f"  [skip] {source}: scan failed - {exc}")
-        counters["failed"] += 1
+        bump("failed")
         return None
 
     # File-level incremental: only fetch blobs whose sha changed.
@@ -170,7 +177,7 @@ def _scan_one_repo(
         descriptions = get_skill_descriptions(source, fetch, client=client)
     except Exception as exc:
         print(f"  [skip] {source}: description fetch failed - {exc}")
-        counters["failed"] += 1
+        bump("failed")
         return None
 
     skills = merge_skill_records(
@@ -199,15 +206,15 @@ def _scan_one_repo(
     # Drop repos whose skill count exceeds the cap (e.g. aggregator/awesome-list
     # repos) so they never enter the index; remove their stale scan data.
     if effective_max > 0 and len(skills) > effective_max:
-        counters["filtered"] += 1
-        counters["filtered_high_skill"] += 1
+        bump("filtered")
+        bump("filtered_high_skill")
         print(f"  [high-skill] {source}: {len(skills)} > {effective_max}; removing cache")
         if repo_dir.exists():
             shutil.rmtree(repo_dir)
         return None
 
-    counters["updated"] += 1
-    counters["total_skills"] += len(skills)
+    bump("updated")
+    bump("new_skills", len(skills))
     print(
         f"  [scan] {source}: {len(skills)} skills "
         f"({len(fetch)}/{len(blobs)} blobs fetched)"
@@ -235,10 +242,7 @@ def scan_repositories(
     _meta_time = 0.0
     effective_max = MAX_SKILL_COUNT if max_skill_count is None else max_skill_count
 
-    subdirs = sorted(
-        d.name for d in base_dir.iterdir()
-        if d.is_dir() and d.name.count("__") == 1
-    )
+    subdirs = iter_repo_dirs(base_dir)
     print(
         f"scanning by-source: {len(subdirs)} GitHub repo dirs"
         + (" (force)" if force else "")
@@ -258,8 +262,10 @@ def scan_repositories(
         "gone": 0,
         "filtered": 0,
         "filtered_high_skill": 0,
+        "new_skills": 0,
         "total_skills": 0,
     }
+    counters_lock = threading.Lock()
     scanned: dict[str, JSON] = {}
 
     # Repo-level scanning is I/O-bound: overlap network waits across repos.
@@ -275,6 +281,7 @@ def scan_repositories(
                 missing=missing,
                 client=client,
                 counters=counters,
+                counters_lock=counters_lock,
                 max_skill_count=effective_max,
             )
             for dir_name in subdirs
@@ -300,6 +307,12 @@ def scan_repositories(
     # Keep every scanned repo, ordered by fetch order (sources not present in
     # the fetch file sink to the end, alphabetical as a tie-breaker).
     repos = sorted(scanned.values(), key=_orig_key)
+
+    # `total_skills` counts every skill in every *valid* repo that survived the
+    # scan (including unchanged repos whose cached scanned.jsonl was reused via
+    # the incremental skip). This is the true size of the scan side that step 3
+    # merges against — not just the skills re-downloaded this run.
+    counters["total_skills"] = sum(len(r.get("skills", [])) for r in repos)
     # Repos without a star count sink to the end when sorted descending.
     repos_by_stars = sorted(
         repos, key=lambda r: r.get("stars") or 0, reverse=True
@@ -339,14 +352,13 @@ def scan_repositories(
         "repos_filtered": counters["filtered"],
         "repos_filtered_high_skill": counters["filtered_high_skill"],
         "skills_scanned": counters["total_skills"],
+        "skills_scanned_new": counters["new_skills"],
     }
     return summary
 
 
 def _summarize_repo(repo_dir: Path, meta_path: Path, source: str) -> JSON:
     """Read a repo's persisted meta + skills into a single summary record."""
-    from .io_utils import read_jsonl
-
     meta = read_json(meta_path, default={}) or {}
     skills = read_jsonl(repo_dir / SCANNED_FILE)
     return {
