@@ -14,14 +14,14 @@
 
 每个 Release 包含：
 
-| 文件 | 说明 |
-| --- | --- |
-| `data.tar.gz` | 完整数据快照（含 `by-source/` 下所有仓库的 fetched / scanned / meta） |
-| `index.jsonl` | 合并后的最终索引（以**技能**为单位平铺，推荐直接消费这个） |
-| `fetched-skills.jsonl` | skills.sh 原始数据汇总（中间产物） |
-| `scanned-repos.jsonl` | 按仓库汇总的扫描结果，**原始扫描顺序**（fetch 拉取到的顺序，即 `fetched-skills.jsonl` 中 source 首次出现的顺序，未排序） |
-| `scanned-repos-by-stars.jsonl` | 按 **star 数降序**排列的扫描结果 |
-| `scanned-repos-by-skillcount.jsonl` | 按**安装 skills 技能数（`skillCount`）降序**排列的扫描结果 |
+| 文件                                | 说明                                                                                                                     |
+| ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `data.tar.gz`                       | 完整数据快照（含 `by-source/` 下所有仓库的 fetched / scanned / meta）                                                    |
+| `index.jsonl`                       | 合并后的最终索引（以**技能**为单位平铺，推荐直接消费这个）                                                               |
+| `fetched-skills.jsonl`              | skills.sh 原始数据汇总（中间产物）                                                                                       |
+| `scanned-repos.jsonl`               | 按仓库汇总的扫描结果，**原始扫描顺序**（fetch 拉取到的顺序，即 `fetched-skills.jsonl` 中 source 首次出现的顺序，未排序） |
+| `scanned-repos-by-stars.jsonl`      | 按 **star 数降序**排列的扫描结果                                                                                         |
+| `scanned-repos-by-skillcount.jsonl` | 按**安装 skills 技能数（`skillCount`）降序**排列的扫描结果                                                               |
 
 `index.jsonl` 每行一个技能：
 
@@ -30,7 +30,9 @@
   "source": "vercel-labs/skills",
   "skillId": "find-skills",
   "installs": 3005209,
-  "weeklyInstalls": [113781, 109199, 109085, 115475, 107969, 101120, 96861, 93130],
+  "weeklyInstalls": [
+    113781, 109199, 109085, 115475, 107969, 101120, 96861, 93130
+  ],
   "path": "skills/find-skills",
   "description": "Discover and install agent skills"
 }
@@ -96,7 +98,9 @@ curl -L -o index.jsonl \
   "source": "vercel-labs/skills",
   "skillId": "find-skills",
   "installs": 3005209,
-  "weeklyInstalls": [113781, 109199, 109085, 115475, 107969, 101120, 96861, 93130]
+  "weeklyInstalls": [
+    113781, 109199, 109085, 115475, 107969, 101120, 96861, 93130
+  ]
 }
 ```
 
@@ -112,7 +116,10 @@ curl -L -o index.jsonl \
 
 ```json
 // scanned.jsonl 中的一行
-{ "path": "skills/find-skills", "description": "Discover and install agent skills" }
+{
+  "path": "skills/find-skills",
+  "description": "Discover and install agent skills"
+}
 ```
 
 ```json
@@ -130,7 +137,7 @@ curl -L -o index.jsonl \
 
 ### 3. 合并索引（`index`）
 
-- **极简说明**：把第 1 步的 skills.sh 原始数据（`fetched-skills.jsonl`）与第 2 步扫描出的所有仓库技能（`scanned.jsonl`）按 `source` + `skillId`（从 `path` 末段推导）合并，生成最终索引 `data/index.jsonl`（以**技能**为单位平铺，每行一个完整技能记录，含 skills.sh 元信息 + 扫描得到的 `path` / `description`）。**只有同时存在于 skills.sh 与仓库扫描中的技能才会进入索引**：仅出现在 skills.sh、但仓库中已不存在（未被扫描到）的技能会被剔除，不会记录；同理，仓库已不存在（第 2 步 404 时已清理其数据）的仓库，其所有技能也不会进入索引。
+- **极简说明**：以第 2 步扫描出的所有仓库技能（`scanned.jsonl`）为基准，按 `source` + `skillId`（从 `path` 末段推导）挂载第 1 步的 skills.sh 数据（`fetched-skills.jsonl`），生成最终索引 `data/index.jsonl`（以**技能**为单位平铺，每行一个完整技能记录，含 skills.sh 元信息 + 扫描得到的 `path` / `description`）。**所有扫描到的技能都会进入索引**：skills.sh 未收录的技能 `installs` 记为 `0`、`weeklyInstalls` 记为 `[]`，并追加在索引末尾（有榜单数据的按 skills.sh 排名顺序在前）；仅出现在 skills.sh、但仓库中已不存在（未被扫描到）的技能会被剔除，不会记录；同理，仓库已不存在（第 2 步 404 时已清理其数据）的仓库，其所有技能也不会进入索引。
 - **对应命令**：`uv run skills-index index`
 
 ```json
@@ -139,7 +146,9 @@ curl -L -o index.jsonl \
   "source": "vercel-labs/skills",
   "skillId": "find-skills",
   "installs": 3005209,
-  "weeklyInstalls": [113781, 109199, 109085, 115475, 107969, 101120, 96861, 93130],
+  "weeklyInstalls": [
+    113781, 109199, 109085, 115475, 107969, 101120, 96861, 93130
+  ],
   "path": "skills/find-skills",
   "description": "Discover and install agent skills"
 }

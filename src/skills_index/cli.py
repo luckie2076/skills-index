@@ -149,7 +149,7 @@ def _build_summary(
         "",
         "### Index (merged)",
         f"- Scanned merged: `{index_sum.get('scanned_merged', 0)}`",
-        f"- Orphans skipped: `{index_sum.get('orphans', 0)}`",
+        f"- Scan-only (no skills.sh data): `{index_sum.get('scan_only', 0)}`",
         f"- Not in repo (dropped): `{index_sum.get('not_in_repo', 0)}`",
     ]
     if index_sum.get("deduped_skills"):

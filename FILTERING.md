@@ -1,7 +1,8 @@
 # 过滤机制说明
 
 本文档完整描述 skills-index 流水线中的全部过滤规则：**仓库级过滤**（整个仓库被丢弃）、
-**仓库内 skill 级过滤**（仓库内单个 SKILL.md 被丢弃）、**索引合并级过滤**（合并时技能被剔除或去重）。
+**仓库内 skill 级过滤**（仓库内单个 SKILL.md 被丢弃）、**索引合并级过滤**（合并时技能被剔除或去重；
+孤儿技能的保留策略 I1 亦在此记录）。
 
 所有规则的实现位置均以 `源文件::函数` 标注，配置项集中在 `src/skills_index/config.py`。
 
@@ -25,11 +26,11 @@ skills.sh API ──▶ [fetch] ──▶ [scan] ──▶ [index] ──▶ ind
 | S1 | 文件名约定 | `github::_parse_tarball` | 只收集 `…/SKILL.md`，其余文件一律忽略 |
 | S2 | 内部路径过滤 | `config::is_internal_skill_path` | SKILL.md 位于仓库内部目录 → 丢弃 |
 | S3 | 非公开 frontmatter | `github::is_nonpublic_frontmatter` | 作者声明 hidden/private/… → 丢弃 |
-| I1 | 孤儿技能 | `index::run_index` | 仓库有、但 skills.sh 榜单没有 → 不入索引 |
+| I1 | 孤儿技能 | `index::run_index` | 仓库有、但 skills.sh 榜单没有 → 保留，元数据置空（`installs: 0` / `weeklyInstalls: []`） |
 | I2 | 榜单失配 | `index::run_index` | 榜单有、但仓库扫描没有 → 剔除 |
 | I3 | 跨仓库技能去重 | `index::_dedup_skills` | skillId + description 双匹配 → 保留 installs 最高者 |
 
-最终索引只收录**同时通过 skills.sh 榜单收录（F1）与仓库真实存在验证（I2）**的技能——双重质量门。
+最终索引以**仓库扫描为基准**：收录范围由扫描结果决定（扫描本身已过 F1–F5 / S1–S3 过滤），skills.sh 榜单（F1）只挂载 `installs` 等元数据，未收录技能以空元数据入索引（I1）；榜单有、仓库无的技能被 I2 剔除——索引中的每个技能都有**当前真实存在**的仓库路径背书。
 
 ---
 
@@ -157,14 +158,16 @@ dist / build / out / node_modules / vendor / third_party
 ## 三、索引合并级过滤（`index.py::run_index`）
 
 前两步的产物在 `index` 步骤按 `(source, skillId)` 连接（`skillId` 从扫描出的 `path`
-末段目录名推导）。连接天然产生两个方向的失配过滤 + 一个显式去重：
+末段目录名推导）。合并以**扫描结果为基准**：所有扫描到的技能都写入 index.jsonl，
+skills.sh 数据只作挂载。连接产生一个方向的失配过滤 + 一个显式去重：
 
-### I1 孤儿技能（仓库有、榜单无）
+### I1 孤儿技能（仓库有、榜单无）→ 保留
 
 仓库里扫描到的 SKILL.md，其 `(source, 目录名)` 在 skills.sh 榜单数据里不存在
-（未被 skills.sh 收录）→ **不写入 index.jsonl**（仍保留在 `by-source/…/scanned.jsonl`
-供他用）。索引的收录范围严格锚定 skills.sh 榜单。
-计数：`orphans`。
+（未被 skills.sh 收录）→ **仍写入 index.jsonl**，`installs` 置 `0`、
+`weeklyInstalls` 置 `[]`（保持记录形状统一），并追加在索引末尾——有榜单数据的
+技能按 skills.sh 排名顺序在前。
+计数：`scan_only`。
 
 ### I2 榜单失配（榜单有、仓库无）
 
@@ -188,8 +191,10 @@ skills.sh 榜单收录的技能，在对应仓库的扫描产物里找不到（�
 
 ## 四、设计原则
 
-1. **双重质量门**：F1（榜单收录）+ I2（仓库验证）。只有"skills.sh 认可 且 仓库里当前真实
-   存在"的技能才进索引——索引天然保守，宁缺毋滥。
+1. **以扫描为基准 + 单一存在性门**：索引收录范围由仓库扫描决定（扫描本身已过
+   F1–F5 / S1–S3 过滤）；skills.sh 榜单（F1）只提供 `installs` 等元数据，未收录的
+   技能以空元数据入索引（I1）。I2 是唯一的存在性门——索引中的每个技能都有
+   **当前真实存在**的仓库路径背书。
 2. **内容寻址，不信任身份标记**：去重指纹用本地计算的 git blob sha（与 GitHub 一致），
    不用 `fork=true` 这类身份标记——身份会说谎（已分叉的 fork），内容不会。
 3. **精确匹配，防止误伤**：目录过滤是整段精确比较而非子串（`testing` ≠ `test`）；
@@ -221,7 +226,7 @@ skills.sh 榜单收录的技能，在对应仓库的扫描产物里找不到（�
 | `repos_filtered` / `repos_filtered_high_skill` | F4 |
 | `repos_deduped` | F5（命中时才显示） |
 | `skills_filtered_nonpublic` | S2 + S3（每次实际解析 tarball 的量，增量跳过的仓库不计） |
-| `orphans` | I1 |
+| `scan_only` | I1（保留计数，非过滤量） |
 | `not_in_repo` | I2 |
 | `deduped_skills` | I3（命中时才显示） |
 

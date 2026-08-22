@@ -50,13 +50,13 @@ def test_run_index_merges_scanned_into_fetched(
     # `b` only exists in skills.sh, not in the repo scan -> dropped.
     assert records == [
         {"source": "owner/repo", "skillId": "a", "installs": 10,
-         "path": "skills/a", "description": "A"}
+         "weeklyInstalls": [], "path": "skills/a", "description": "A"}
     ]
     assert read_jsonl(index_path) == records
     assert summary["index"] == 1
     assert summary["scanned_merged"] == 1
     assert summary["not_in_repo"] == 1
-    assert summary["orphans"] == 0
+    assert summary["scan_only"] == 0
 
 
 def test_run_index_keeps_fetched_order(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -81,7 +81,10 @@ def test_run_index_keeps_fetched_order(tmp_path: Path, monkeypatch: pytest.Monke
     assert summary["not_in_repo"] == 1  # `c` dropped
 
 
-def test_run_index_excludes_orphans(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_run_index_includes_scan_only_skills(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """仓库有、榜单无的技能仍入索引，installs/weeklyInstalls 置空，追加在末尾。"""
     fetched = [{"source": "owner/repo", "skillId": "a", "installs": 1}]
     scanned = {
         "owner__repo": [
@@ -94,9 +97,36 @@ def test_run_index_excludes_orphans(tmp_path: Path, monkeypatch: pytest.MonkeyPa
 
     records, summary = index_mod.run_index(base_dir=by_source)
 
-    assert [r["skillId"] for r in records] == ["a"]
-    assert summary["orphans"] == 1
-    assert summary["index"] == 1
+    assert records == [
+        {"source": "owner/repo", "skillId": "a", "installs": 1,
+         "weeklyInstalls": [], "path": "skills/a", "description": "A"},
+        {"source": "owner/repo", "skillId": "gh-only", "installs": 0,
+         "weeklyInstalls": [], "path": "skills/gh-only",
+         "description": "not on skills.sh"},
+    ]
+    assert summary["scan_only"] == 1
+    assert summary["index"] == 2
+
+
+def test_run_index_empty_fetched_still_indexes_scanned(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """fetched 数据缺失时仍以扫描为基准输出，元数据全部置空。"""
+    fetched = []
+    scanned = {"owner__repo": [{"path": "skills/a", "description": "A"}]}
+    fetched_path, index_path, by_source = _setup_data(tmp_path, fetched=fetched, scanned=scanned)
+    _patch_paths(monkeypatch, fetched_path, index_path)
+
+    records, summary = index_mod.run_index(base_dir=by_source)
+
+    assert records == [
+        {"source": "owner/repo", "skillId": "a", "installs": 0,
+         "weeklyInstalls": [], "path": "skills/a", "description": "A"}
+    ]
+    assert read_jsonl(index_path) == records
+    assert summary["scan_only"] == 1
+    assert summary["not_in_repo"] == 0
+    assert "no fetched data" in capsys.readouterr().out
 
 
 def test_run_index_empty_fetched_writes_empty_index(

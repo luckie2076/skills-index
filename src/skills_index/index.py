@@ -1,4 +1,4 @@
-"""Combine fetched skills.sh data with scanned GitHub skills into index.jsonl."""
+"""Merge scanned GitHub skills (baseline) with skills.sh metadata into index.jsonl."""
 
 from __future__ import annotations
 
@@ -70,15 +70,26 @@ def _dedup_skills(records: list[Record]) -> tuple[list[Record], int]:
     return [r for i, r in enumerate(records) if i not in drop], len(drop)
 
 
-def run_index(base_dir: Path = BY_SOURCE_DIR) -> tuple[list[Record], dict[str, JSON]]:
-    """Merge the fetch output with every repo's scanned skills into index.jsonl.
+def _filled(rec: Record) -> Record:
+    """installs / weeklyInstalls 缺失时填 0 / []，保证每条记录形状统一。"""
+    rec.setdefault("installs", 0)
+    rec.setdefault("weeklyInstalls", [])
+    return rec
 
-    - `fetched-skills.jsonl` provides the skills.sh metadata (name / installs / ...).
-    - each `scanned.jsonl` provides the scanned GitHub `path` + `description`.
-    Records are joined on `source` + `skillId`; scanned fields (path, description)
-    fill in the fetch-only records. Only skills actually present in a repo scan
-    are written to index.jsonl: fetched skills with no scanned counterpart (e.g.
-    removed from the repo) are dropped.
+
+def run_index(base_dir: Path = BY_SOURCE_DIR) -> tuple[list[Record], dict[str, JSON]]:
+    """Merge every repo's scanned skills with skills.sh metadata into index.jsonl.
+
+    - each repo's `scanned.jsonl` is the baseline: every scanned skill is
+      written to index.jsonl.
+    - `fetched-skills.jsonl` provides the skills.sh metadata (installs /
+      weeklyInstalls), joined on `source` + `skillId`. Scanned skills with no
+      fetched counterpart ("scan-only", e.g. not registered on skills.sh) keep
+      empty metadata (`installs: 0`, `weeklyInstalls: []`).
+    - fetched skills with no scanned counterpart (removed from the repo) are
+      dropped: only skills a repo scan confirms belong in the index.
+    - output order: skills with fetched data keep the skills.sh ranking order;
+      scan-only skills are appended at the end.
 
     Returns ``(index_records, summary)`` where ``summary`` holds counts for the
     run report.
@@ -86,63 +97,64 @@ def run_index(base_dir: Path = BY_SOURCE_DIR) -> tuple[list[Record], dict[str, J
     # Index only merges skills whose repo was scanned in step 2. Step 2 drops
     # repos above the skillCount cap (config.MAX_SKILL_COUNT) and deletes their
     # by-source cache, so those repos never reach this step.
-    fetched = {_key(r): r for r in read_jsonl(FETCHED_SKILLS)}
+    fetched_list = read_jsonl(FETCHED_SKILLS)
+    fetched: dict[tuple[str, str], Record] = {}
+    rank: dict[tuple[str, str], int] = {}
+    for i, r in enumerate(fetched_list):
+        k = _key(r)
+        if k not in fetched:
+            fetched[k] = r
+            rank[k] = i
+    if not fetched:
+        print(f"[index] no fetched data at {FETCHED_SKILLS}; installs will be empty")
     summary: dict[str, JSON] = {
-        "fetched": 0,
+        "fetched": len(fetched),
         "scanned_merged": 0,
-        "orphans": 0,
+        "scan_only": 0,
         "not_in_repo": 0,
         "deduped_skills": 0,
         "index": 0,
     }
-    if not fetched:
-        print(f"[index] no fetched data at {FETCHED_SKILLS}; run `fetch` first")
-        write_jsonl(INDEX_JSONL, [])
-        return [], summary
 
-    summary["fetched"] = len(fetched)
-    merged: dict[tuple[str, str], Record] = dict(fetched)
+    matched: list[tuple[int, Record]] = []
+    scan_only: list[Record] = []
     matched_keys: set[tuple[str, str]] = set()
 
     subdirs = iter_repo_dirs(base_dir)
-    scanned_count = 0
-    orphan_count = 0
     for dir_name in subdirs:
         source = dir_to_source(dir_name)
         gh_path = base_dir / dir_name / SCANNED_FILE
         for rec in read_jsonl(gh_path):
             skill_id = Path(str(rec.get("path", ""))).name
             key = (source, skill_id)
-            base = merged.get(key)
+            base = fetched.get(key)
             if base is None:
-                # GitHub repo contains a SKILL.md not registered on skills.sh.
-                # The index is scoped to the skills.sh ranking, so these
-                # "orphan" skills are intentionally excluded from index.jsonl
-                # (they remain available in data/by-source for other uses).
-                orphan_count += 1
+                # GitHub repo contains a SKILL.md not registered on skills.sh:
+                # still indexed, with empty skills.sh metadata.
+                scan_only.append({"source": source, "skillId": skill_id, **rec})
                 continue
-            base.update(rec)
-            merged[key] = base
+            matched.append((rank[key], {**base, **rec}))
             matched_keys.add(key)
-            scanned_count += 1
 
-    # Only skills confirmed by a repo scan belong in the index; fetched skills
-    # missing from the scan are dropped (keeps fetched order).
-    not_in_repo = len(fetched) - len(matched_keys)
-    result = [_ordered(merged[k]) for k in fetched if k in matched_keys]
+    # Skills with fetched data keep the skills.sh ranking order; scan-only
+    # skills are appended afterwards (repo-dir order, path order within repo).
+    matched.sort(key=lambda t: t[0])
+    result = [_ordered(_filled(rec)) for _, rec in matched]
+    result += [_ordered(_filled(rec)) for rec in scan_only]
     # 跨仓库重复（skillId + description 双匹配）只保留 installs 更高者。
     result, deduped = _dedup_skills(result)
     write_jsonl(INDEX_JSONL, result)
-    summary["scanned_merged"] = scanned_count
-    summary["orphans"] = orphan_count
-    summary["not_in_repo"] = not_in_repo
+    summary["scanned_merged"] = len(matched)
+    summary["scan_only"] = len(scan_only)
+    summary["not_in_repo"] = len(fetched) - len(matched_keys)
     summary["deduped_skills"] = deduped
     summary["index"] = len(result)
     msg = (
-        f"[index] merged {scanned_count} scanned into {len(fetched)} fetched "
-        f"(skipped {orphan_count} orphan, dropped {not_in_repo} not-in-repo"
+        f"[index] merged {len(matched)} scanned with skills.sh data, "
+        f"{len(scan_only)} scan-only (empty installs), "
+        f"dropped {summary['not_in_repo']} not-in-repo"
         + (f", deduped {deduped} cross-repo" if deduped else "")
-        + f") -> {len(result)} in {INDEX_JSONL}"
+        + f" -> {len(result)} in {INDEX_JSONL}"
     )
     print(msg)
     return result, summary
