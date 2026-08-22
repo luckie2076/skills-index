@@ -83,7 +83,7 @@ curl -L -o index.jsonl \
 
 ## 工作原理
 
-索引由三步流水线生成，最终合并为 `data/index.jsonl`。
+索引由三步流水线生成，最终合并为 `data/index.jsonl`。**完整的过滤规则（仓库级 / 仓库内 skill 级 / 索引合并级）见 [FILTERING.md](FILTERING.md)。**
 
 ### 1. 获取 skills.sh 数据（`fetch`）
 

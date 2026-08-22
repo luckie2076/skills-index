@@ -96,32 +96,65 @@ def _build_summary(
         "",
         "### Fetch (skills.sh)",
         f"- Pages fetched: `{pages_str}`",
-        f"- Raw skills: `{fetch_sum.get('raw_skills', 0)}`",
-        f"- Kept (GitHub sources): `{fetch_sum.get('kept_github', 0)}`",
-        f"- Dropped (non-GitHub): `{fetch_sum.get('dropped_non_github', 0)}`",
+        f"- Skills kept: `{fetch_sum.get('kept_github', 0)}` "
+        f"of `{fetch_sum.get('raw_skills', 0)}` raw "
+        f"(`{fetch_sum.get('dropped_non_github', 0)}` non-GitHub dropped)",
         f"- Source repos: `{fetch_sum.get('source_dirs', 0)}`",
-        f"- Pruned stale repo dirs: `{fetch_sum.get('pruned_stale', 0)}`",
     ]
+    # pruned_stale 仅在增量模式注入;非增量(--pages/--force)不显示
+    if fetch_sum.get("pruned_stale") is not None:
+        lines.append(
+            f"- Pruned stale repo dirs: `{fetch_sum.get('pruned_stale', 0)}`"
+        )
     if failed:
         lines.append(f"- Skipped pages (errors): `{len(failed)}` {failed}")
-    high_skill = scan_sum.get('repos_filtered_high_skill', 0)
+
+    repos_total = scan_sum.get("repos_total", 0)
+    bd_skipped = scan_sum.get("repos_skipped", 0)
+    bd_updated = scan_sum.get("repos_updated", 0)
+    bd_failed = scan_sum.get("repos_failed", 0)
+    bd_gone = scan_sum.get("repos_gone", 0)
+    bd_filtered = scan_sum.get("repos_filtered", 0)
+    bd_sum = bd_skipped + bd_updated + bd_failed + bd_gone + bd_filtered
+    bd_check = "✓ matches total" if bd_sum == repos_total else "⚠ MISMATCH vs total"
+    share = (
+        f"{bd_updated}/{repos_total} ({bd_updated / repos_total * 100:.0f}%)"
+        if repos_total
+        else f"{bd_updated}/{repos_total} (n/a)"
+    )
     lines += [
         "",
         "### Scan (GitHub repos)",
-        f"- Repos total: `{scan_sum.get('repos_total', 0)}`",
-        f"- Skipped (unchanged): `{scan_sum.get('repos_skipped', 0)}`",
-        f"- Updated (incremental): `{scan_sum.get('repos_updated', 0)}`",
-        f"- Failed: `{scan_sum.get('repos_failed', 0)}`",
-        f"- Removed (repo not found): `{scan_sum.get('repos_gone', 0)}`",
-        f"- Filtered (high-skill > {MAX_SKILL_COUNT}): `{high_skill}`",
+        f"- Repos total: `{repos_total}`",
+        f"- Skipped (unchanged): `{bd_skipped}`",
+        f"- Updated (incremental): `{bd_updated}`",
+        f"- Failed: `{bd_failed}`",
+        f"- Removed (repo not found): `{bd_gone}`",
+        f"- Filtered (high-skill > {MAX_SKILL_COUNT}): `{bd_filtered}`",
+        f"- Breakdown check: `{bd_sum}` {bd_check}; updated share {share}",
         f"- Skills scanned (all valid repos): `{scan_sum.get('skills_scanned', 0)}`",
         f"- Skills scanned this run (incremental): `{scan_sum.get('skills_scanned_new', 0)}`",
+        f"- Skills filtered non-public (this run): "
+        f"`{scan_sum.get('skills_filtered_nonpublic', 0)}`",
+    ]
+    # 去重行仅在命中时显示（去重仓库已计入 skipped/updated，属信息性细分）
+    if scan_sum.get("repos_deduped"):
+        lines.append(
+            f"- Deduped (identical skill tree, kept best-starred): "
+            f"`{scan_sum['repos_deduped']}`"
+        )
+    lines += [
         "",
         "### Index (merged)",
-        f"- Fetched skills: `{index_sum.get('fetched', 0)}`",
         f"- Scanned merged: `{index_sum.get('scanned_merged', 0)}`",
         f"- Orphans skipped: `{index_sum.get('orphans', 0)}`",
         f"- Not in repo (dropped): `{index_sum.get('not_in_repo', 0)}`",
+    ]
+    if index_sum.get("deduped_skills"):
+        lines.append(
+            f"- Cross-repo duplicates dropped: `{index_sum['deduped_skills']}`"
+        )
+    lines += [
         f"- **Final index entries: `{index_sum.get('index', 0)}`**",
         "",
         "### Artifacts",

@@ -65,7 +65,8 @@ def patched(monkeypatch, tmp_path):
     def fake_blobs(source, branch, *, client=None):
         with lock:
             seen_threads.add(threading.get_ident())
-        return {"a": ("skills/a", f"sha-{source}")}
+        # (blobs, filtered_nonpublic): 每次重扫上报 1 个非公开技能被过滤。
+        return {"a": ("skills/a", f"sha-{source}")}, 1
 
     def fake_descs(source, fetch, *, client=None):
         with lock:
@@ -92,6 +93,8 @@ def test_scan_runs_concurrently_and_marks_threads(patched):
     # scan, including unchanged repos whose cached scanned.jsonl was reused.
     assert summary["skills_scanned"] == 6
     assert summary["skills_scanned_new"] == 3
+    # 只有重扫的仓库（4-6）上报非公开过滤计数；skipped 仓库不重新解析 tarball。
+    assert summary["skills_filtered_nonpublic"] == 3
     assert scanned_repos.exists()
 
 
@@ -168,6 +171,86 @@ def test_scan_removes_stale_data_for_missing_repo(monkeypatch, tmp_path):
     assert read_jsonl(scanned_repos) == []  # repo not recorded
 
 
+def test_scan_dedups_identical_skill_trees(monkeypatch, tmp_path):
+    """Repos whose entire skill tree is byte-identical (mirror / undiverged
+    fork): only the most-starred one survives; the loser is removed from the
+    per-repo summary and its by-source cache deleted, so its duplicate skills
+    never reach index.jsonl."""
+    OWNERS = {
+        "big/repo": ("2024-01-01T00:00:00Z", "main", 1000),
+        "small/mirror": ("2024-01-01T00:00:00Z", "main", 10),
+        "other/repo": ("2024-01-01T00:00:00Z", "main", 5),
+    }
+    base_dir = tmp_path / "by-source"
+    for source in OWNERS:
+        (base_dir / config.source_to_dir(source)).mkdir(parents=True)
+
+    scanned_repos = tmp_path / "scanned-repos.jsonl"
+    monkeypatch.setattr(scan_mod, "SCANNED_REPOS", scanned_repos)
+    monkeypatch.setattr(scan_mod, "SCANNED_REPOS_BY_STARS", tmp_path / "by-stars.jsonl")
+    monkeypatch.setattr(scan_mod, "SCANNED_REPOS_BY_SKILLCOUNT", tmp_path / "by-skill.jsonl")
+
+    def fake_metas(sources, *, client=None, max_workers=8):
+        return dict(OWNERS), set()
+
+    def fake_blobs(source, branch, *, client=None):
+        if source == "other/repo":
+            return {"o": ("skills/o", "sha-o")}, 0
+        # big/repo 与 small/mirror：同一棵技能树（path + blob sha 完全一致）。
+        return {"a": ("skills/a", "sha-a"), "b": ("skills/b", "sha-b")}, 0
+
+    def fake_descs(source, fetch, *, client=None):
+        return {name: f"desc for {name}" for name in fetch}
+
+    monkeypatch.setattr(scan_mod, "get_repo_metas", fake_metas)
+    monkeypatch.setattr(scan_mod, "get_skill_blobs", fake_blobs)
+    monkeypatch.setattr(scan_mod, "get_skill_descriptions", fake_descs)
+
+    summary = scan_repositories(base_dir=base_dir)
+
+    assert summary["repos_total"] == 3
+    assert summary["repos_deduped"] == 1
+    # 幸存者是星数更高的 big/repo；镜像不进入汇总。
+    assert [r["source"] for r in read_jsonl(scanned_repos)] == ["big/repo", "other/repo"]
+    # 镜像缓存被整体移除，其技能不会进入 index 步骤。
+    assert not (base_dir / config.source_to_dir("small/mirror")).exists()
+    # 仅统计幸存仓库的技能（big/repo 2 个 + other/repo 1 个）。
+    assert summary["skills_scanned"] == 3
+
+
+def test_scan_dedup_no_skills_repo_never_deduped(monkeypatch, tmp_path):
+    """Repos with zero skills have no fingerprint: two empty repos coexist."""
+    OWNERS = {
+        "a/empty": ("2024-01-01T00:00:00Z", "main", 100),
+        "b/empty": ("2024-01-01T00:00:00Z", "main", 1),
+    }
+    base_dir = tmp_path / "by-source"
+    for source in OWNERS:
+        (base_dir / config.source_to_dir(source)).mkdir(parents=True)
+
+    monkeypatch.setattr(scan_mod, "SCANNED_REPOS", tmp_path / "scanned-repos.jsonl")
+    monkeypatch.setattr(scan_mod, "SCANNED_REPOS_BY_STARS", tmp_path / "by-stars.jsonl")
+    monkeypatch.setattr(scan_mod, "SCANNED_REPOS_BY_SKILLCOUNT", tmp_path / "by-skill.jsonl")
+
+    monkeypatch.setattr(
+        scan_mod,
+        "get_repo_metas",
+        lambda sources, *, client=None, max_workers=8: (dict(OWNERS), set()),
+    )
+    monkeypatch.setattr(
+        scan_mod, "get_skill_blobs", lambda source, branch, *, client=None: ({}, 0)
+    )
+    monkeypatch.setattr(
+        scan_mod, "get_skill_descriptions", lambda source, fetch, *, client=None: {}
+    )
+
+    summary = scan_repositories(base_dir=base_dir)
+
+    assert summary["repos_deduped"] == 0
+    assert summary["repos_updated"] == 2
+    assert len(read_jsonl(scan_mod.SCANNED_REPOS)) == 2
+
+
 def test_is_missing_repo_detects_404_in_cause_chain():
     import httpx
 
@@ -228,8 +311,10 @@ def test_scan_filters_high_skillcount_repos(monkeypatch, tmp_path):
     def fake_blobs(source, branch, *, client=None):
         if source == "owner4/repo4":
             # 501 skill blobs -> exceeds the default cap of 500.
-            return {f"s{i}": (f"skills/s{i}", f"sha-{i}") for i in range(501)}
-        return {"a": ("skills/a", "sha-a")}
+            return {f"s{i}": (f"skills/s{i}", f"sha-{i}") for i in range(501)}, 0
+        # Per-source sha keeps each repo's skill-tree fingerprint distinct
+        # (identical blobShas would trip the mirror dedup).
+        return {"a": ("skills/a", f"sha-{source}")}, 0
 
     def fake_descs(source, fetch, *, client=None):
         return {name: f"desc for {name}" for name in fetch}

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime
+import json
 import shutil
 import threading
 import time
@@ -24,6 +25,7 @@ from .config import (
     SCHEMA_VERSION,
     dir_to_source,
     iter_repo_dirs,
+    source_to_dir,
 )
 
 # META_FILE holds GitHub-sourced metadata (branch / pushedAt / stars / skillCount).
@@ -162,11 +164,13 @@ def _scan_one_repo(
         return _summarize_repo(repo_dir, meta_path, source)
 
     try:
-        blobs = get_skill_blobs(source, branch, client=client)
+        blobs, filtered_nonpublic = get_skill_blobs(source, branch, client=client)
     except Exception as exc:
         print(f"  [skip] {source}: scan failed - {exc}")
         bump("failed")
         return None
+    if filtered_nonpublic:
+        bump("skills_filtered_nonpublic", filtered_nonpublic)
 
     # File-level incremental: only fetch blobs whose sha changed.
     prev_shas = dict(prev.get("blobShas") or {})
@@ -215,9 +219,12 @@ def _scan_one_repo(
 
     bump("updated")
     bump("new_skills", len(skills))
+    filtered_note = (
+        f", {filtered_nonpublic} non-public filtered" if filtered_nonpublic else ""
+    )
     print(
         f"  [scan] {source}: {len(skills)} skills "
-        f"({len(fetch)}/{len(blobs)} blobs fetched)"
+        f"({len(fetch)}/{len(blobs)} blobs fetched{filtered_note})"
     )
     return _summarize_repo(repo_dir, meta_path, source)
 
@@ -262,8 +269,10 @@ def scan_repositories(
         "gone": 0,
         "filtered": 0,
         "filtered_high_skill": 0,
+        "deduped": 0,
         "new_skills": 0,
         "total_skills": 0,
+        "skills_filtered_nonpublic": 0,
     }
     counters_lock = threading.Lock()
     scanned: dict[str, JSON] = {}
@@ -308,6 +317,12 @@ def scan_repositories(
     # the fetch file sink to the end, alphabetical as a tie-breaker).
     repos = sorted(scanned.values(), key=_orig_key)
 
+    # 内容指纹去重：整棵技能树（path + blob sha）完全一致的仓库是未分叉的
+    # fork / 镜像，每组仅保留星数最高者，其余移出汇总并删除缓存，避免重复
+    # 技能进入 index。去重后的 repos 才是 index 步骤的真实输入。
+    repos, deduped = _dedup_repos(repos, base_dir)
+    counters["deduped"] = len(deduped)
+
     # `total_skills` counts every skill in every *valid* repo that survived the
     # scan (including unchanged repos whose cached scanned.jsonl was reused via
     # the incremental skip). This is the true size of the scan side that step 3
@@ -330,7 +345,8 @@ def scan_repositories(
         f"scan done: skipped {counters['skipped']} unchanged, "
         f"updated {counters['updated']}, failed {counters['failed']}, "
         f"gone {counters['gone']}, filtered {counters['filtered']} "
-        f"(high-skill {counters['filtered_high_skill']})."
+        f"(high-skill {counters['filtered_high_skill']}), "
+        f"deduped {counters['deduped']}."
     )
     print(
         f"wrote {len(repos)} repos -> "
@@ -351,8 +367,10 @@ def scan_repositories(
         "repos_gone": counters["gone"],
         "repos_filtered": counters["filtered"],
         "repos_filtered_high_skill": counters["filtered_high_skill"],
+        "repos_deduped": counters["deduped"],
         "skills_scanned": counters["total_skills"],
         "skills_scanned_new": counters["new_skills"],
+        "skills_filtered_nonpublic": counters["skills_filtered_nonpublic"],
     }
     return summary
 
@@ -368,3 +386,48 @@ def _summarize_repo(repo_dir: Path, meta_path: Path, source: str) -> JSON:
         "skillCount": meta.get("skillCount", len(skills)),
         "skills": [s["path"] for s in skills],
     }
+
+
+def _content_fingerprint(shas: dict[str, str]) -> str:
+    """Stable serialization of a repo's skill tree ({path: blob sha})."""
+    return json.dumps(sorted(shas.items()), ensure_ascii=False)
+
+
+def _dedup_repos(repos: list[JSON], base_dir: Path) -> tuple[list[JSON], list[tuple[str, str]]]:
+    """Drop mirror repos whose skill tree is byte-identical to another's.
+
+    Two repos with the same {path: blob sha} map carry exactly the same
+    SKILL.md files — an undiverged fork or copy. Within each identical group
+    only the most-starred repo survives (fetch order breaks ties); the rest
+    are removed from the summary and their by-source cache is deleted so
+    their duplicate skills never reach index.jsonl. Repos with no skills have
+    no fingerprint and are never deduped. Returns ``(kept, [(loser, winner)])``.
+    """
+    groups: dict[str, list[JSON]] = {}
+    for r in repos:
+        meta_path = base_dir / source_to_dir(str(r.get("source", ""))) / META_FILE
+        shas = (read_json(meta_path, default={}) or {}).get("blobShas") or {}
+        if not shas:
+            continue
+        groups.setdefault(_content_fingerprint(shas), []).append(r)
+
+    losers: dict[str, str] = {}
+    for group in groups.values():
+        if len(group) < 2:
+            continue
+        # max 返回迭代顺序中的第一个最大值；group 保持 fetch 顺序，星数
+        # 相同时 skills.sh 排名靠前者（更早出现）胜出。
+        winner = max(group, key=lambda r: r.get("stars") or 0)
+        for r in group:
+            if r is not winner:
+                losers[str(r["source"])] = str(winner["source"])
+    if not losers:
+        return repos, []
+
+    for loser, winner in sorted(losers.items()):
+        print(f"  [dedup] {loser}: identical skill tree to {winner}; removed")
+        repo_dir = base_dir / source_to_dir(loser)
+        if repo_dir.exists():
+            shutil.rmtree(repo_dir)
+    kept = [r for r in repos if str(r.get("source", "")) not in losers]
+    return kept, sorted(losers.items())

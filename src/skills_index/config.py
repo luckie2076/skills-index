@@ -32,6 +32,58 @@ SCANNED_REPOS_BY_SKILLCOUNT = DATA_DIR / "scanned-repos-by-skillcount.jsonl"
 # 设为 0 可关闭该上限。
 MAX_SKILL_COUNT = 500
 
+# Skill 级过滤（scan 阶段）之一：结构性内部目录。SKILL.md 所在路径的任一
+# 非文件名目录段命中以下目录则视为非公开技能（测试 / 示例 / 构建产物等），
+# 不写入 scanned.jsonl。只匹配中间目录段、整段精确比较且大小写不敏感，
+# 因此名为 test / template / e2e 的真实技能（最后一段是技能自身目录名）
+# 不会被误伤。
+SKILL_EXCLUDE_DIRS: frozenset[str] = frozenset({
+    "test", "tests", "__tests__", "spec", "e2e",
+    "example", "examples", "sample", "samples", "demo", "demos",
+    "fixture", "fixtures", "mock", "mocks", "stub", "stubs",
+    "template", "templates", "scaffold", "boilerplate",
+    "doc", "docs",
+    "dist", "build", "out", "node_modules", "vendor", "third_party",
+})
+
+# Skill 级过滤之二：状态词（与 HIDDEN_FRONTMATTER_MARKERS 语义对齐）。
+# 任一路径段命中即排除，含技能自身目录名——目录或技能名本身为
+# deprecated / hidden / private 等即宣示非公开（如 skills/deprecated/foo
+# 或名为 hidden 的技能）；现实中不存在恰好以这些词命名的公开技能
+# （数据回放零命中，纯预防性规则）。
+SKILL_EXCLUDE_ANY_DIRS: frozenset[str] = frozenset({
+    "deprecated", "hidden", "private", "internal", "obsolete",
+})
+
+# 隐藏目录段（如 .github / .devcontainer）默认视为仓库配置而排除；但紧跟
+# skills 段的隐藏根（.claude/skills、.agents/skills 等各 agent 工具的公开
+# 技能标准位置）以及 .skills 根本身保留（见 is_internal_skill_path）。
+# .github 恒为仓库配置，即使形如 .github/skills 也不算公开。
+
+# frontmatter 中标记技能为非公开的字段（值为真即排除，如 true / yes / 1）。
+# 识别生态常见别名，不发明新标准；另支持 public: false。
+HIDDEN_FRONTMATTER_MARKERS: tuple[str, ...] = (
+    "deprecated", "hidden", "private", "internal", "obsolete",
+)
+
+
+def is_internal_skill_path(rel: str) -> bool:
+    """True if a SKILL.md lives in a repo-internal (non user-facing) directory."""
+    segs = rel.split("/")
+    for seg in segs:  # 状态词匹配任意段，含技能自身目录名
+        if seg.lower() in SKILL_EXCLUDE_ANY_DIRS:
+            return True
+    for i, seg in enumerate(segs[:-1]):  # 结构词只看中间目录段，不含技能名
+        low = seg.lower()
+        if low in SKILL_EXCLUDE_DIRS:
+            return True
+        if seg.startswith("."):
+            next_low = segs[i + 1].lower()
+            public_root = (next_low == "skills" or low == ".skills") and low != ".github"
+            if not public_root:
+                return True
+    return False
+
 # --- External endpoints ---
 SKILLS_API = "https://skills.sh/api/skills/all-time"
 GITHUB_API = "https://api.github.com"
@@ -42,7 +94,9 @@ SCANNED_FILE = "scanned.jsonl"
 META_FILE = "meta.json"
 
 # Bump when the scan output format changes so stale caches are rebuilt once.
-SCHEMA_VERSION = 3
+# v4: skill 级过滤（内部路径 + 非公开 frontmatter 标记）——v3 缓存的
+# scanned.jsonl 可能含非公开技能，需要重建。
+SCHEMA_VERSION = 4
 
 # Fields kept from the skills.sh payload. No URL is persisted: consumers
 # reconstruct the GitHub directory URL from `source` + `path` (see README).

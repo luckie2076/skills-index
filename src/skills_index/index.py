@@ -44,6 +44,32 @@ def _ordered(rec: Record) -> Record:
     return out
 
 
+def _dedup_skills(records: list[Record]) -> tuple[list[Record], int]:
+    """Drop cross-repo duplicates: same skillId + same non-empty description.
+
+    skillId 是技能目录名（非全局唯一，同名不同实现的技能真实存在），单独
+    相同不足以判定重复；叠加 frontmatter description 完全一致才视为同一
+    技能的镜像/拷贝，保留 installs 更高者（fetch 顺序破平局，即 skills.sh
+    排名靠前者）。description 为空的记录不参与去重：未知不等于相同。
+    Returns ``(kept, dropped_count)``.
+    """
+    groups: dict[tuple[str, str], list[int]] = {}
+    for i, rec in enumerate(records):
+        sid = str(rec.get("skillId", ""))
+        desc = str(rec.get("description", "") or "").strip()
+        if sid and desc:
+            groups.setdefault((sid, desc), []).append(i)
+    drop: set[int] = set()
+    for idxs in groups.values():
+        if len(idxs) < 2:
+            continue
+        winner = max(idxs, key=lambda i: (records[i].get("installs") or 0, -i))
+        drop.update(i for i in idxs if i != winner)
+    if not drop:
+        return records, 0
+    return [r for i, r in enumerate(records) if i not in drop], len(drop)
+
+
 def run_index(base_dir: Path = BY_SOURCE_DIR) -> tuple[list[Record], dict[str, JSON]]:
     """Merge the fetch output with every repo's scanned skills into index.jsonl.
 
@@ -66,6 +92,7 @@ def run_index(base_dir: Path = BY_SOURCE_DIR) -> tuple[list[Record], dict[str, J
         "scanned_merged": 0,
         "orphans": 0,
         "not_in_repo": 0,
+        "deduped_skills": 0,
         "index": 0,
     }
     if not fetched:
@@ -103,15 +130,19 @@ def run_index(base_dir: Path = BY_SOURCE_DIR) -> tuple[list[Record], dict[str, J
     # missing from the scan are dropped (keeps fetched order).
     not_in_repo = len(fetched) - len(matched_keys)
     result = [_ordered(merged[k]) for k in fetched if k in matched_keys]
+    # 跨仓库重复（skillId + description 双匹配）只保留 installs 更高者。
+    result, deduped = _dedup_skills(result)
     write_jsonl(INDEX_JSONL, result)
     summary["scanned_merged"] = scanned_count
     summary["orphans"] = orphan_count
     summary["not_in_repo"] = not_in_repo
+    summary["deduped_skills"] = deduped
     summary["index"] = len(result)
     msg = (
         f"[index] merged {scanned_count} scanned into {len(fetched)} fetched "
-        f"(skipped {orphan_count} orphan, dropped {not_in_repo} not-in-repo) "
-        f"-> {len(result)} in {INDEX_JSONL}"
+        f"(skipped {orphan_count} orphan, dropped {not_in_repo} not-in-repo"
+        + (f", deduped {deduped} cross-repo" if deduped else "")
+        + f") -> {len(result)} in {INDEX_JSONL}"
     )
     print(msg)
     return result, summary

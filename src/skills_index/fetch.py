@@ -143,7 +143,6 @@ def run_fetch(*, max_pages: int = 0, token: str = "") -> tuple[list[Record], dic
     dirs, total = distribute_by_source(skills)
     print(f"distributed into {dirs} source dirs, {total} records")
     summary = {
-        "pages": max_pages if max_pages else "all",
         "raw_skills": len(raw),
         "kept_github": len(skills),
         "dropped_non_github": dropped,

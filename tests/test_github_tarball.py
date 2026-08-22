@@ -52,15 +52,18 @@ def test_get_skill_blobs_downloads_tarball_once(monkeypatch) -> None:
     raw = _make_tarball(
         {
             "skills/foo/SKILL.md": b"---\ndescription: Foo\n---\n",
+            # 同名测试夹具：过滤后不得覆盖真实技能
+            "tests/foo/SKILL.md": b"---\ndescription: Fixture\n---\n",
             "skills/bar/SKILL.md": b"---\ndescription: Bar\n---\n",
         }
     )
     client = _FakeClient(raw)
-    blobs = get_skill_blobs("owner/repo", "main", client=client)  # type: ignore[arg-type]
+    blobs, filtered = get_skill_blobs("owner/repo", "main", client=client)  # type: ignore[arg-type]
 
     assert client.requests == ["https://codeload.github.com/owner/repo/tar.gz/main"]
     assert set(blobs) == {"foo", "bar"}
     assert blobs["foo"][0] == "skills/foo"
+    assert filtered == 1
 
 
 def test_get_skill_descriptions_reuses_cached_tarball(monkeypatch) -> None:
@@ -73,7 +76,7 @@ def test_get_skill_descriptions_reuses_cached_tarball(monkeypatch) -> None:
     )
     client = _FakeClient(raw)
 
-    blobs = get_skill_blobs("owner/repo", "main", client=client)  # type: ignore[arg-type]
+    blobs, _filtered = get_skill_blobs("owner/repo", "main", client=client)  # type: ignore[arg-type]
     # Fetching descriptions must not issue a second tarball request.
     descs = get_skill_descriptions("owner/repo", blobs, client=client)  # type: ignore[arg-type]
 

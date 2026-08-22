@@ -18,6 +18,7 @@ from urllib.parse import quote
 import httpx
 import yaml
 
+from .config import HIDDEN_FRONTMATTER_MARKERS, JSON, is_internal_skill_path
 from .http import get_json, new_github_client
 
 # codeload serves archive downloads and is not part of the REST API rate limit.
@@ -64,22 +65,31 @@ def _git_blob_sha(content: bytes) -> str:
     return hashlib.sha1(f"blob {len(content)}\0".encode() + content).hexdigest()
 
 
-# Per-run cache: source -> (blobs, contents). Populated once per repo by the
-# first tarball download; `get_skill_descriptions` reuses the cached contents
-# so no additional API calls are made.
+# Per-run cache: source -> (blobs, contents, filtered_count). Populated once
+# per repo by the first tarball download; `get_skill_descriptions` reuses the
+# cached contents so no additional API calls are made.
 #   blobs:    {basename: (relative_path, blob_sha)}
 #   contents: {relative_path: raw SKILL.md text}
-_tarball_scan: dict[str, tuple[dict[str, tuple[str, str]], dict[str, str]]] = {}
+_tarball_scan: dict[str, tuple[dict[str, tuple[str, str]], dict[str, str], int]] = {}
 
 
-def _parse_tarball(raw: bytes) -> tuple[dict[str, tuple[str, str]], dict[str, str]]:
-    """Scan a repo tarball for every SKILL.md; return (blobs, contents).
+def _parse_tarball(  # noqa: E501
+    raw: bytes,
+) -> tuple[dict[str, tuple[str, str]], dict[str, str], int]:
+    """Scan a repo tarball for every SKILL.md; return (blobs, contents, filtered).
+
+    Non-public SKILL.md files are dropped before the basename-keyed dict is
+    built, so a same-named test fixture can never shadow the real skill:
+    internal paths (tests/examples/templates/... -- see `is_internal_skill_path`)
+    and non-public frontmatter markers (`is_nonpublic_frontmatter`).
+    `filtered` counts how many were dropped.
 
     The tarball has a top-level `<repo>-<sha>/` directory, which is stripped so
     `relative_path` is the path within the repo (as used elsewhere).
     """
     blobs: dict[str, tuple[str, str]] = {}
     contents: dict[str, str] = {}
+    filtered = 0
     with tarfile.open(fileobj=io.BytesIO(raw), mode="r:gz") as tf:
         for member in tf.getmembers():
             if not member.isfile():
@@ -90,20 +100,27 @@ def _parse_tarball(raw: bytes) -> tuple[dict[str, tuple[str, str]], dict[str, st
             rel = parts[1]
             if not rel.endswith("/SKILL.md"):
                 continue
+            skill_dir = rel[: -len("/SKILL.md")]
+            if is_internal_skill_path(skill_dir):
+                filtered += 1
+                continue
             f = tf.extractfile(member)
             if f is None:
                 continue
             data = f.read()
-            skill_dir = rel[: -len("/SKILL.md")]
+            text = data.decode("utf-8", errors="replace")
+            if is_nonpublic_frontmatter(text):
+                filtered += 1
+                continue
             blobs[skill_dir.rsplit("/", 1)[-1]] = (skill_dir, _git_blob_sha(data))
-            contents[skill_dir] = data.decode("utf-8", errors="replace")
-    return blobs, contents
+            contents[skill_dir] = text
+    return blobs, contents, filtered
 
 
-def _scan_repo(
+def _scan_repo(  # noqa: E501
     source: str, branch: str, *, client: httpx.Client
-) -> tuple[dict[str, tuple[str, str]], dict[str, str]]:
-    """Download (once) and scan a repo tarball; return (blobs, contents)."""
+) -> tuple[dict[str, tuple[str, str]], dict[str, str], int]:
+    """Download (once) and scan a repo tarball; return (blobs, contents, filtered)."""
     cached = _tarball_scan.get(source)
     if cached is not None:
         return cached
@@ -111,49 +128,69 @@ def _scan_repo(
     url = f"{CODELOAD}/{owner}/{repo}/tar.gz/{quote(branch, safe='')}"
     resp = client.get(url)
     resp.raise_for_status()
-    blobs, contents = _parse_tarball(resp.content)
-    _tarball_scan[source] = (blobs, contents)
-    return blobs, contents
+    result = _parse_tarball(resp.content)
+    _tarball_scan[source] = result
+    return result
 
 
 def get_skill_blobs(  # noqa: E501
     source: str, branch: str = "HEAD", *, client: httpx.Client | None = None
-) -> dict[str, tuple[str, str]]:
-    """Return {basename: (relative_path, blob_sha)} for every SKILL.md.
+) -> tuple[dict[str, tuple[str, str]], int]:
+    """Return ({basename: (relative_path, blob_sha)}, internal_filtered_count).
 
     Backed by a single codeload tarball download (not billed to the REST quota);
     the blob sha is computed locally with git's exact algorithm, keeping the
     file-level incremental fingerprints identical to the previous tree-based
-    approach.
+    approach. SKILL.md files on internal paths (tests/examples/...) are
+    filtered out and counted in the second return value.
     """
     client = client or new_github_client()
-    blobs, _contents = _scan_repo(source, branch, client=client)
-    return blobs
+    blobs, _contents, filtered = _scan_repo(source, branch, client=client)
+    return blobs, filtered
 
 
 def get_skill_dirs(  # noqa: E501
     source: str, branch: str = "HEAD", *, client: httpx.Client | None = None
 ) -> dict[str, str]:
     """Return {basename: relative_path} of every dir containing SKILL.md."""
-    blobs = get_skill_blobs(source, branch, client=client)
+    blobs, _filtered = get_skill_blobs(source, branch, client=client)
     return {name: path for name, (path, _sha) in blobs.items()}
+
+
+def parse_frontmatter(markdown: str) -> dict[str, JSON]:
+    """Return the YAML frontmatter of a SKILL.md as a dict (empty if absent)."""
+    text = markdown.lstrip("\ufeff").lstrip()
+    if not text.startswith("---"):
+        return {}
+    body = text[3:].lstrip("\n")
+    parts = body.split("\n---", 1)
+    if len(parts) < 2:
+        return {}
+    try:
+        data = yaml.safe_load(parts[0]) or {}
+    except yaml.YAMLError:
+        return {}
+    return data if isinstance(data, dict) else {}
 
 
 def extract_description(markdown: str) -> str:
     """Return the `description` from a SKILL.md YAML frontmatter (empty if absent)."""
-    text = markdown.lstrip("\ufeff").lstrip()
-    if not text.startswith("---"):
-        return ""
-    body = text[3:].lstrip("\n")
-    parts = body.split("\n---", 1)
-    if len(parts) < 2:
-        return ""
-    try:
-        data = yaml.safe_load(parts[0]) or {}
-    except yaml.YAMLError:
-        return ""
-    desc = data.get("description")
+    desc = parse_frontmatter(markdown).get("description")
     return str(desc).strip() if desc else ""
+
+
+def is_nonpublic_frontmatter(markdown: str) -> bool:
+    """True if the SKILL.md frontmatter explicitly opts out of public listing.
+
+    HIDDEN_FRONTMATTER_MARKERS 中任一字段为真值（true / yes / 1），或
+    `public: false`，视为作者声明该技能不对外发布。
+    """
+    data = parse_frontmatter(markdown)
+    if not data:
+        return False
+    if data.get("public") is False:
+        return True
+    return any(data.get(marker) for marker in HIDDEN_FRONTMATTER_MARKERS)
 
 
 def get_skill_descriptions(  # noqa: E501
@@ -172,7 +209,7 @@ def get_skill_descriptions(  # noqa: E501
     if not blobs:
         return {}
     client = client or new_github_client()
-    _full_blobs, contents = _scan_repo(source, "HEAD", client=client)
+    _full_blobs, contents, _filtered = _scan_repo(source, "HEAD", client=client)
     out: dict[str, str] = {}
     for name, (path, _sha) in blobs.items():
         out[name] = extract_description(contents.get(path, ""))
