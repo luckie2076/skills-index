@@ -115,7 +115,8 @@ def _build_summary(
     bd_failed = scan_sum.get("repos_failed", 0)
     bd_gone = scan_sum.get("repos_gone", 0)
     bd_filtered = scan_sum.get("repos_filtered", 0)
-    bd_sum = bd_skipped + bd_updated + bd_failed + bd_gone + bd_filtered
+    bd_tree = scan_sum.get("repos_tree_skipped", 0)
+    bd_sum = bd_skipped + bd_updated + bd_failed + bd_gone + bd_filtered + bd_tree
     bd_check = "✓ matches total" if bd_sum == repos_total else "⚠ MISMATCH vs total"
     share = (
         f"{bd_updated}/{repos_total} ({bd_updated / repos_total * 100:.0f}%)"
@@ -127,6 +128,7 @@ def _build_summary(
         "### Scan (GitHub repos)",
         f"- Repos total: `{repos_total}`",
         f"- Skipped (unchanged): `{bd_skipped}`",
+        f"- Tree-skipped (push w/o skill changes): `{bd_tree}`",
         f"- Updated (incremental): `{bd_updated}`",
         f"- Failed: `{bd_failed}`",
         f"- Removed (repo not found): `{bd_gone}`",

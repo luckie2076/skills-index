@@ -33,6 +33,7 @@ from .github import (
     get_repo_metas,
     get_skill_blobs,
     get_skill_descriptions,
+    get_tree_shas,
 )
 from .http import new_github_client
 from .io_utils import read_json, read_jsonl, write_json, write_jsonl
@@ -163,6 +164,28 @@ def _scan_one_repo(
         # 已扫描过的仓库仍纳入汇总，从既有产物读取
         return _summarize_repo(repo_dir, meta_path, source)
 
+    # Trees 预检（仅热缓存仓库）：pushedAt 变了不必然意味着 SKILL.md 变了。
+    # 用一次 Trees API 调用（sha 与本地指纹同源）比对该仓库当前全部
+    # SKILL.md 的 blob sha；与缓存全等（如 README-only push）则跳过 tarball
+    # 下载，只刷新 meta 的时间戳。无缓存（首次扫描）或 tree 截断时直接
+    # 走 tarball 全量路径（get_tree_shas 返回 None）。
+    prev_shas = dict(prev.get("blobShas") or {})
+    if not force and not schema_upgrade and prev_shas:
+        try:
+            tree_shas = get_tree_shas(source, branch, client=client)
+        except Exception as exc:
+            print(f"  [tree] {source}: tree pre-check failed - {exc}; fetching tarball")
+            tree_shas = None
+        if tree_shas is not None and tree_shas == prev_shas:
+            bump("tree_skipped")
+            print(f"  [tree-skip] {source}: skills unchanged since {pushed}")
+            # 刷新 pushedAt（防止每轮重查 tree），其余缓存字段保持不变。
+            prev["pushedAt"] = pushed
+            prev["stars"] = stars
+            prev["lastScanned"] = now
+            write_json(meta_path, prev)
+            return _summarize_repo(repo_dir, meta_path, source)
+
     try:
         blobs, filtered_nonpublic = get_skill_blobs(source, branch, client=client)
     except Exception as exc:
@@ -171,9 +194,7 @@ def _scan_one_repo(
         return None
     if filtered_nonpublic:
         bump("skills_filtered_nonpublic", filtered_nonpublic)
-
     # File-level incremental: only fetch blobs whose sha changed.
-    prev_shas = dict(prev.get("blobShas") or {})
     fetch = plan_blob_fetches(
         blobs, prev_shas, force=force, schema_upgrade=schema_upgrade
     )
@@ -270,6 +291,7 @@ def scan_repositories(
         "filtered": 0,
         "filtered_high_skill": 0,
         "deduped": 0,
+        "tree_skipped": 0,
         "new_skills": 0,
         "total_skills": 0,
         "skills_filtered_nonpublic": 0,
@@ -343,6 +365,7 @@ def scan_repositories(
     write_jsonl(SCANNED_REPOS_BY_SKILLCOUNT, repos_by_skillcount)
     print(
         f"scan done: skipped {counters['skipped']} unchanged, "
+        f"tree-skipped {counters['tree_skipped']} skills-unchanged, "
         f"updated {counters['updated']}, failed {counters['failed']}, "
         f"gone {counters['gone']}, filtered {counters['filtered']} "
         f"(high-skill {counters['filtered_high_skill']}), "
@@ -368,6 +391,7 @@ def scan_repositories(
         "repos_filtered": counters["filtered"],
         "repos_filtered_high_skill": counters["filtered_high_skill"],
         "repos_deduped": counters["deduped"],
+        "repos_tree_skipped": counters["tree_skipped"],
         "skills_scanned": counters["total_skills"],
         "skills_scanned_new": counters["new_skills"],
         "skills_filtered_nonpublic": counters["skills_filtered_nonpublic"],

@@ -251,6 +251,188 @@ def test_scan_dedup_no_skills_repo_never_deduped(monkeypatch, tmp_path):
     assert len(read_jsonl(scan_mod.SCANNED_REPOS)) == 2
 
 
+def test_scan_tree_precheck_skips_tarball_on_skill_unchanged(monkeypatch, tmp_path):
+    """Trees 预检：pushedAt 变了但所有 SKILL.md 的 blob sha 未变（如
+    README-only push）→ 跳过 tarball 下载，刷新 meta 时间戳并复用缓存。"""
+    OWNERS = {"owner/repo": ("2024-06-01T00:00:00Z", "main", 50)}
+    base_dir = tmp_path / "by-source"
+    repo_dir = base_dir / config.source_to_dir("owner/repo")
+    repo_dir.mkdir(parents=True)
+    # 上次扫描：pushedAt 较旧，blobShas 是本次 tree 预检的比对基准。
+    (repo_dir / config.META_FILE).write_text(
+        f'{{"pushedAt": "2024-01-01T00:00:00Z", "schemaVersion": {config.SCHEMA_VERSION}, '
+        f'"stars": 50, "skillCount": 1, "blobShas": {{"skills/a": "sha-a"}}}}'
+    )
+    (repo_dir / config.SCANNED_FILE).write_text(
+        '{"path": "skills/a", "description": "cached"}\n'
+    )
+
+    scanned_repos = tmp_path / "scanned-repos.jsonl"
+    monkeypatch.setattr(scan_mod, "SCANNED_REPOS", scanned_repos)
+    monkeypatch.setattr(scan_mod, "SCANNED_REPOS_BY_STARS", tmp_path / "by-stars.jsonl")
+    monkeypatch.setattr(scan_mod, "SCANNED_REPOS_BY_SKILLCOUNT", tmp_path / "by-skill.jsonl")
+
+    monkeypatch.setattr(
+        scan_mod,
+        "get_repo_metas",
+        lambda sources, *, client=None, max_workers=8: (dict(OWNERS), set()),
+    )
+
+    def fake_tree(source, branch, *, client=None):
+        # pushedAt 变了，但 SKILL.md 的 sha 与缓存一致（README-only push）。
+        return {"skills/a": "sha-a"}
+
+    def _fail_tarball(*args, **kwargs):
+        raise AssertionError("tarball must not be downloaded when tree pre-check hits")
+
+    monkeypatch.setattr(scan_mod, "get_tree_shas", fake_tree)
+    monkeypatch.setattr(scan_mod, "get_skill_blobs", _fail_tarball)
+    monkeypatch.setattr(scan_mod, "get_skill_descriptions", _fail_tarball)
+
+    summary = scan_repositories(base_dir=base_dir)
+
+    assert summary["repos_tree_skipped"] == 1
+    assert summary["repos_updated"] == 0
+    # meta 的 pushedAt 已刷新为最新（下轮直接走 [skip]，不再重查 tree）。
+    meta = read_json(repo_dir / config.META_FILE)
+    assert meta["pushedAt"] == "2024-06-01T00:00:00Z"
+    # 技能记录复用缓存，未重新扫描。
+    assert read_jsonl(repo_dir / config.SCANNED_FILE) == [
+        {"path": "skills/a", "description": "cached"}
+    ]
+    assert summary["skills_scanned"] == 1
+
+
+def test_scan_tree_precheck_mismatch_downloads_tarball(monkeypatch, tmp_path):
+    """Trees 预检未命中（SKILL.md 有变化）→ 照常下载 tarball 走全量扫描。"""
+    OWNERS = {"owner/repo": ("2024-06-01T00:00:00Z", "main", 50)}
+    base_dir = tmp_path / "by-source"
+    repo_dir = base_dir / config.source_to_dir("owner/repo")
+    repo_dir.mkdir(parents=True)
+    (repo_dir / config.META_FILE).write_text(
+        f'{{"pushedAt": "2024-01-01T00:00:00Z", "schemaVersion": {config.SCHEMA_VERSION}, '
+        f'"stars": 50, "skillCount": 1, "blobShas": {{"skills/a": "sha-old"}}}}'
+    )
+    (repo_dir / config.SCANNED_FILE).write_text(
+        '{"path": "skills/a", "description": "old"}\n'
+    )
+
+    monkeypatch.setattr(scan_mod, "SCANNED_REPOS", tmp_path / "scanned-repos.jsonl")
+    monkeypatch.setattr(scan_mod, "SCANNED_REPOS_BY_STARS", tmp_path / "by-stars.jsonl")
+    monkeypatch.setattr(scan_mod, "SCANNED_REPOS_BY_SKILLCOUNT", tmp_path / "by-skill.jsonl")
+
+    monkeypatch.setattr(
+        scan_mod,
+        "get_repo_metas",
+        lambda sources, *, client=None, max_workers=8: (dict(OWNERS), set()),
+    )
+    # tree 返回的 sha 与缓存不同（技能文件变了）。
+    monkeypatch.setattr(
+        scan_mod, "get_tree_shas",
+        lambda source, branch, *, client=None: {"skills/a": "sha-new"},
+    )
+    monkeypatch.setattr(
+        scan_mod,
+        "get_skill_blobs",
+        lambda source, branch, *, client=None: ({"a": ("skills/a", "sha-new")}, 0),
+    )
+    monkeypatch.setattr(
+        scan_mod,
+        "get_skill_descriptions",
+        lambda source, fetch, *, client=None: {"a": "fresh desc"},
+    )
+
+    summary = scan_repositories(base_dir=base_dir)
+
+    assert summary["repos_tree_skipped"] == 0
+    assert summary["repos_updated"] == 1
+    assert read_jsonl(repo_dir / config.SCANNED_FILE) == [
+        {"path": "skills/a", "description": "fresh desc"}
+    ]
+
+
+def test_scan_tree_precheck_error_falls_back_to_tarball(monkeypatch, tmp_path):
+    """Trees 预检失败（网络错误等）→ 降级为 tarball 全量路径，不算失败。"""
+    OWNERS = {"owner/repo": ("2024-06-01T00:00:00Z", "main", 50)}
+    base_dir = tmp_path / "by-source"
+    repo_dir = base_dir / config.source_to_dir("owner/repo")
+    repo_dir.mkdir(parents=True)
+    (repo_dir / config.META_FILE).write_text(
+        f'{{"pushedAt": "2024-01-01T00:00:00Z", "schemaVersion": {config.SCHEMA_VERSION}, '
+        f'"stars": 50, "skillCount": 1, "blobShas": {{"skills/a": "sha-a"}}}}'
+    )
+
+    monkeypatch.setattr(scan_mod, "SCANNED_REPOS", tmp_path / "scanned-repos.jsonl")
+    monkeypatch.setattr(scan_mod, "SCANNED_REPOS_BY_STARS", tmp_path / "by-stars.jsonl")
+    monkeypatch.setattr(scan_mod, "SCANNED_REPOS_BY_SKILLCOUNT", tmp_path / "by-skill.jsonl")
+
+    monkeypatch.setattr(
+        scan_mod,
+        "get_repo_metas",
+        lambda sources, *, client=None, max_workers=8: (dict(OWNERS), set()),
+    )
+
+    def broken_tree(source, branch, *, client=None):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(scan_mod, "get_tree_shas", broken_tree)
+    monkeypatch.setattr(
+        scan_mod,
+        "get_skill_blobs",
+        lambda source, branch, *, client=None: ({"a": ("skills/a", "sha-a")}, 0),
+    )
+    monkeypatch.setattr(
+        scan_mod,
+        "get_skill_descriptions",
+        lambda source, fetch, *, client=None: {"a": "desc"},
+    )
+
+    summary = scan_repositories(base_dir=base_dir)
+
+    # 预检失败不计为 failed，走 tarball 正常更新。
+    assert summary["repos_failed"] == 0
+    assert summary["repos_updated"] == 1
+    assert summary["repos_tree_skipped"] == 0
+
+
+def test_scan_tree_precheck_cold_cache_skips_precheck(monkeypatch, tmp_path):
+    """无 blobShas 缓存（首次扫描）不调用 Trees API，直接下载 tarball。"""
+    OWNERS = {"owner/repo": ("2024-06-01T00:00:00Z", "main", 50)}
+    base_dir = tmp_path / "by-source"
+    repo_dir = base_dir / config.source_to_dir("owner/repo")
+    repo_dir.mkdir(parents=True)
+    # 无 meta.json（冷缓存）。
+
+    monkeypatch.setattr(scan_mod, "SCANNED_REPOS", tmp_path / "scanned-repos.jsonl")
+    monkeypatch.setattr(scan_mod, "SCANNED_REPOS_BY_STARS", tmp_path / "by-stars.jsonl")
+    monkeypatch.setattr(scan_mod, "SCANNED_REPOS_BY_SKILLCOUNT", tmp_path / "by-skill.jsonl")
+
+    monkeypatch.setattr(
+        scan_mod,
+        "get_repo_metas",
+        lambda sources, *, client=None, max_workers=8: (dict(OWNERS), set()),
+    )
+
+    def _fail_tree(*args, **kwargs):
+        raise AssertionError("tree pre-check must not run on a cold cache")
+
+    monkeypatch.setattr(scan_mod, "get_tree_shas", _fail_tree)
+    monkeypatch.setattr(
+        scan_mod,
+        "get_skill_blobs",
+        lambda source, branch, *, client=None: ({"a": ("skills/a", "sha-a")}, 0),
+    )
+    monkeypatch.setattr(
+        scan_mod,
+        "get_skill_descriptions",
+        lambda source, fetch, *, client=None: {"a": "desc"},
+    )
+
+    summary = scan_repositories(base_dir=base_dir)
+
+    assert summary["repos_updated"] == 1
+
+
 def test_is_missing_repo_detects_404_in_cause_chain():
     import httpx
 

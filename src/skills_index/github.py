@@ -73,6 +73,34 @@ def _git_blob_sha(content: bytes) -> str:
 _tarball_scan: dict[str, tuple[dict[str, tuple[str, str]], dict[str, str], int]] = {}
 
 
+def get_tree_shas(
+    source: str, branch: str, *, client: httpx.Client | None = None
+) -> dict[str, str] | None:
+    """Return {relative_path: blob_sha} for every SKILL.md in the repo tree.
+
+    One Trees API call (recursive) per repo — the sha values are identical to
+    the locally computed `_git_blob_sha` fingerprints, so callers can compare
+    them against the cached `meta.json` blobShas to decide whether any
+    SKILL.md changed since the last scan (e.g. a README-only push would show
+    an unchanged set, and the tarball download can be skipped entirely).
+
+    Returns `None` when the tree is truncated (>100k entries / 7MB response)
+    or the request fails: the caller should fall back to downloading the
+    tarball, which is always authoritative.
+    """
+    owner, repo = _split(source)
+    c = client or new_github_client()
+    data = get_json(c, f"/repos/{owner}/{repo}/git/trees/{quote(branch, safe='')}?recursive=1")
+    if data.get("truncated"):
+        print(f"  [tree] {source}: tree truncated; falling back to tarball")
+        return None
+    return {
+        e["path"]: e["sha"]
+        for e in data.get("tree", [])
+        if e.get("type") == "blob" and e.get("path", "").endswith("/SKILL.md")
+    }
+
+
 def _parse_tarball(  # noqa: E501
     raw: bytes,
 ) -> tuple[dict[str, tuple[str, str]], dict[str, str], int]:
