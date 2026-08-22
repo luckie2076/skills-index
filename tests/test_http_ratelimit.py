@@ -123,3 +123,24 @@ def test_get_json_404_raises_immediately_without_retries(monkeypatch):
     with pytest.raises(HttpError):
         get_json(_FakeClient(), "x")  # type: ignore[arg-type]
     assert calls["n"] == 1
+
+
+def test_get_json_451_raises_immediately_without_retries(monkeypatch):
+    monkeypatch.setattr(http_mod.time, "sleep", lambda s: None)
+    calls = {"n": 0}
+
+    def fake_get(url):
+        calls["n"] += 1
+        return _FakeResponse(451)
+
+    class _FakeClient:
+        def get(self, url):
+            return fake_get(url)
+
+    from skills_index.http import HttpError
+
+    # A 451 (legally blocked, e.g. DMCA takedown) is as definitive as a 404:
+    # retrying cannot change the answer, so fail fast with a single request.
+    with pytest.raises(HttpError):
+        get_json(_FakeClient(), "x")  # type: ignore[arg-type]
+    assert calls["n"] == 1
